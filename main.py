@@ -6,15 +6,16 @@ import os
 import requests
 import json
 from datetime import datetime, timedelta, date
+from keep_alive import keep_alive # Đảm bảo bạn đã tạo file keep_alive.py
 
-# --- 1. CÀI ĐẶT CƠ SỞ DỮ LIỆU (Phiên bản 6.0) ---
+# --- 1. CÀI ĐẶT CƠ SỞ DỮ LIỆU (v6.0) ---
 
 def init_db():
     """Khởi tạo cơ sở dữ liệu và thêm các bảng/cột mới nếu cần."""
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
     
-    # Bảng users: Thêm last_daily, wins, losses, profit_loss
+    # Bảng users
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
@@ -26,7 +27,7 @@ def init_db():
     )
     ''')
     
-    # Bảng matches (Thêm UNIQUE cho api_match_id)
+    # Bảng matches
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS matches (
         match_id TEXT PRIMARY KEY,
@@ -37,7 +38,7 @@ def init_db():
     )
     ''')
     
-    # Bảng bets (Giữ nguyên)
+    # Bảng bets
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS bets (
         bet_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,7 +51,7 @@ def init_db():
     )
     ''')
 
-    # Bảng Watchlist (Giữ nguyên)
+    # Bảng Watchlist
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS watched_leagues (
         league_id INTEGER PRIMARY KEY,
@@ -58,7 +59,7 @@ def init_db():
     )
     ''')
     
-    # Bảng Settings (Giữ nguyên)
+    # Bảng Settings
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
@@ -66,7 +67,7 @@ def init_db():
     )
     ''')
     
-    # Bảng MỚI: Role Tiers
+    # Bảng Role Tiers
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS role_tiers (
         role_id INTEGER PRIMARY KEY,
@@ -75,7 +76,7 @@ def init_db():
     )
     ''')
     
-    # Bảng MỚI: Challenges
+    # Bảng Challenges
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS challenges (
         challenge_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,13 +86,13 @@ def init_db():
         challenger_bet_on TEXT NOT NULL,
         opponent_bet_on TEXT NOT NULL,
         amount INTEGER NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending', -- pending, accepted, declined, resolved, cancelled
+        status TEXT NOT NULL DEFAULT 'pending',
         message_id INTEGER,
         FOREIGN KEY(match_id) REFERENCES matches(match_id)
     )
     ''')
 
-    # --- Nâng cấp Bảng Cũ ---
+    # Nâng cấp Bảng Cũ
     def add_column_if_not_exists(table, column, definition):
         try:
             cursor.execute(f'SELECT {column} FROM {table} LIMIT 1')
@@ -111,7 +112,7 @@ def init_db():
     conn.close()
     print("Khởi tạo/Nâng cấp cơ sở dữ liệu (v6.0) thành công.")
 
-# --- 2. CÁC HÀM TRỢ GIÚP (Hoàn chỉnh) ---
+# --- 2. CÁC HÀM TRỢ GIÚP (Nằm bên ngoài class) ---
 def get_balance(user_id):
     conn = sqlite3.connect('database.db'); cursor = conn.cursor()
     cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
@@ -119,7 +120,6 @@ def get_balance(user_id):
     return result[0] if result else None
 
 def update_balance(user_id, amount, is_relative=True):
-    """Cập nhật số dư. nếu is_relative=True, amount là số cộng thêm (hoặc trừ)."""
     conn = sqlite3.connect('database.db'); cursor = conn.cursor()
     if is_relative:
         cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
@@ -128,16 +128,14 @@ def update_balance(user_id, amount, is_relative=True):
     conn.commit(); conn.close()
 
 def register_user(user_id, starting_balance=100):
-    """Đăng ký người dùng mới. Trả về True nếu mới, False nếu đã tồn tại."""
     conn = sqlite3.connect('database.db'); cursor = conn.cursor()
     try:
         cursor.execute("INSERT INTO users (user_id, balance, last_daily) VALUES (?, ?, ?)", (user_id, starting_balance, "1970-01-01T00:00:00"))
         conn.commit(); conn.close(); return True
-    except sqlite3.IntegrityError: # Người dùng đã tồn tại
+    except sqlite3.IntegrityError:
         conn.close(); return False
 
 def get_setting(key, default=None):
-    """Lấy một cài đặt từ DB."""
     conn = sqlite3.connect('database.db'); cursor = conn.cursor()
     cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
     result = cursor.fetchone()
@@ -145,13 +143,11 @@ def get_setting(key, default=None):
     return result[0] if result else default
 
 def set_setting(key, value):
-    """Lưu một cài đặt vào DB."""
     conn = sqlite3.connect('database.db'); cursor = conn.cursor()
     cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
     conn.commit(); conn.close()
 
 def get_int_setting(key, default):
-    """Lấy một cài đặt số nguyên."""
     value = get_setting(key, default)
     try: return int(value)
     except (ValueError, TypeError): return default
@@ -160,9 +156,12 @@ def get_int_setting(key, default):
 intents = discord.Intents.default()
 intents.messages = True
 intents.guilds = True
-intents.members = True # Cần Intent MEMBERS để cập nhật roles
+intents.members = True # Bắt buộc
 
 class BettingBot(discord.Client):
+    
+    # --- BÊN TRONG CLASS BETTINGBOT ---
+    
     def __init__(self, *, intents: discord.Intents):
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
@@ -182,7 +181,7 @@ class BettingBot(discord.Client):
         print("Vòng lặp tự động tìm kèo đã khởi động.")
         print("Vòng lặp tự động cập nhật role đã khởi động.")
 
-    # --- (ĐÃ DI CHUYỂN VÀO TRONG CLASS) VÒNG LẶP TỰ ĐỘNG TÌM KÈO ---
+    # --- VÒNG LẶP TỰ ĐỘNG TÌM KÈO (BÊN TRONG CLASS) ---
     @tasks.loop(hours=6)
     async def auto_find_task(self):
         print(f"[{datetime.now()}] Đang chạy tác vụ tự động tìm kèo...")
@@ -214,12 +213,9 @@ class BettingBot(discord.Client):
                 for fixture in data['response']:
                     api_id = fixture['fixture']['id']
                     cursor.execute("SELECT match_id FROM matches WHERE api_match_id = ?", (api_id,))
-                    if cursor.fetchone() is not None: continue # Kèo đã tồn tại
-                    
+                    if cursor.fetchone() is not None: continue 
                     team_a, team_b = fixture['teams']['home']['name'], fixture['teams']['away']['name']
                     internal_id = f"auto_{api_id}"
-                    
-                    # Dùng hàm riêng để tránh lỗi interaction
                     await internal_create_match_for_autofind(channel, internal_id, team_a, team_b, api_id)
                     new_matches_found += 1
             except Exception as e: print(f"Tác vụ tự động: Lỗi khi lấy giải {league_id}: {e}")
@@ -229,15 +225,14 @@ class BettingBot(discord.Client):
 
     @auto_find_task.before_loop
     async def before_auto_find_task(self):
-        # Đổi tần suất chạy dựa trên cài đặt
         frequency_hours = get_int_setting('autofind_frequency', 6)
         if self.auto_find_task.hours != frequency_hours:
             self.auto_find_task.change_interval(hours=frequency_hours)
             print(f"Tần suất tự động tìm kèo được cập nhật là: {frequency_hours} giờ.")
         await self.wait_until_ready()
 
-    # --- (ĐÃ DI CHUYỂN VÀO TRONG CLASS) VÒNG LẶP TỰ ĐỘNG CẬP NHẬT ROLE ---
-    @tasks.loop(minutes=30) # Chạy 30 phút 1 lần
+    # --- VÒNG LẶP CẬP NHẬT ROLE (BÊN TRONG CLASS) ---
+    @tasks.loop(minutes=30)
     async def update_roles_task(self):
         print(f"[{datetime.now()}] Đang chạy tác vụ cập nhật role...")
         conn = sqlite3.connect('database.db'); cursor = conn.cursor()
@@ -304,17 +299,15 @@ class BettingBot(discord.Client):
     async def before_update_roles_task(self):
         await self.wait_until_ready()
 
-# --- KHỞI TẠO BOT (Nằm bên ngoài class) ---
+# --- (KẾT THÚC CLASS) ---
+
+# --- KHỞI TẠO BOT (BÊN NGOÀI CLASS) ---
 client = BettingBot(intents=intents)
 RAPIDAPI_KEY = os.environ.get('RAPIDAPI_KEY')
-# Các hằng số này sẽ được đọc từ DB
-# DAILY_AMOUNT = 10 
-# STARTING_BALANCE = 100
 
-# --- 4. HÀM LOGIC LÕI (Nằm bên ngoài class) ---
+# --- 4. HÀM LOGIC LÕI (BÊN NGOÀI CLASS) ---
 
 async def internal_create_match(interaction: discord.Interaction, internal_id: str, team_a: str, team_b: str, api_id: int):
-    """Hàm lõi tạo kèo (dùng cho lệnh manual và /find_match)."""
     conn = sqlite3.connect('database.db'); cursor = conn.cursor()
     try:
         cursor.execute("INSERT INTO matches (match_id, team_a, team_b, api_match_id, status) VALUES (?, ?, ?, ?, 'open')", 
@@ -331,7 +324,6 @@ async def internal_create_match(interaction: discord.Interaction, internal_id: s
     finally: conn.close()
 
 async def internal_create_match_for_autofind(channel: discord.TextChannel, internal_id: str, team_a: str, team_b: str, api_id: int):
-    """Hàm lõi tạo kèo, dùng cho tác vụ tự động."""
     conn = sqlite3.connect('database.db'); cursor = conn.cursor()
     try:
         cursor.execute("INSERT INTO matches (match_id, team_a, team_b, api_match_id, status) VALUES (?, ?, ?, ?, 'open')", 
@@ -347,7 +339,6 @@ async def internal_create_match_for_autofind(channel: discord.TextChannel, inter
     finally: conn.close()
 
 async def internal_resolve_logic(interaction_response_method, match_id: str, winner_team_name: str):
-    """Hàm lõi xử lý trả thưởng (Hỗ trợ /stats và /challenge)."""
     conn = sqlite3.connect('database.db'); cursor = conn.cursor()
     cursor.execute("SELECT status, team_a, team_b FROM matches WHERE match_id = ?", (match_id,))
     match_data = cursor.fetchone()
@@ -367,13 +358,11 @@ async def internal_resolve_logic(interaction_response_method, match_id: str, win
     else:
         await interaction_response_method(f"⚠️ Tên đội thắng (`{winner_team_name}`) không khớp. Dùng `/edit_match` rồi `/resolve_match`.")
         cursor.execute("UPDATE matches SET status = 'locked' WHERE match_id = ?", (match_id,)); conn.commit(); conn.close(); return
-
     def update_stats(user_id, is_win, profit_loss):
         if is_win:
             cursor.execute("UPDATE users SET wins = wins + 1, profit_loss = profit_loss + ? WHERE user_id = ?", (profit_loss, user_id))
         else:
             cursor.execute("UPDATE users SET losses = losses + 1, profit_loss = profit_loss + ? WHERE user_id = ?", (profit_loss, user_id))
-
     cursor.execute("SELECT user_id, amount FROM bets WHERE match_id = ? AND team_bet_on = ?", (match_id, winning_pool_name)); winning_bets = cursor.fetchall()
     cursor.execute("SELECT user_id, amount FROM bets WHERE match_id = ? AND team_bet_on = ?", (match_id, losing_pool_1_name)); losing_bets_1 = cursor.fetchall()
     cursor.execute("SELECT user_id, amount FROM bets WHERE match_id = ? AND team_bet_on = ?", (match_id, losing_pool_2_name)); losing_bets_2 = cursor.fetchall()
@@ -381,7 +370,6 @@ async def internal_resolve_logic(interaction_response_method, match_id: str, win
     total_losing_pot, total_pot = total_losing_pot_1 + total_losing_pot_2, total_winning_pot + total_losing_pot
     response_msg = f"🏆 Kết quả trận `{match_id}` ({team_a} vs {team_b}): **{winner_team_name.upper()}** thắng! 🏆\n"
     response_msg += f"Tổng tiền cược pool: {total_pot} (Thắng: {total_winning_pot}, Thua: {total_losing_pot}).\n"
-
     if total_winning_pot == 0:
         response_msg += f"\nKhông ai cược {winning_pool_name}. {total_losing_pot} token thuộc về nhà cái!"
         for user_id, amount in (losing_bets_1 + losing_bets_2): update_stats(user_id, is_win=False, profit_loss=-amount)
@@ -399,7 +387,6 @@ async def internal_resolve_logic(interaction_response_method, match_id: str, win
         for user_id, amount in (losing_bets_1 + losing_bets_2):
             update_stats(user_id, is_win=False, profit_loss=-amount)
             user = await client.fetch_user(user_id); response_msg += f"- {user.mention} mất {amount} token.\n"
-    
     response_msg += "\n--- Kết quả Thách đấu 1v1 ---\n"
     cursor.execute("SELECT challenge_id, challenger_id, opponent_id, challenger_bet_on, opponent_bet_on, amount FROM challenges WHERE match_id = ? AND status = 'accepted'", (match_id,))
     challenges = cursor.fetchall()
@@ -419,18 +406,16 @@ async def internal_resolve_logic(interaction_response_method, match_id: str, win
                 update_balance(p1_id, amount); update_balance(p2_id, amount)
                 response_msg += f"🤝 Kèo 1v1 giữa {p1.mention} và {p2.mention} kết thúc HÒA! Cả hai được hoàn lại {amount} token.\n"
             cursor.execute("UPDATE challenges SET status = 'resolved' WHERE challenge_id = ?", (chal_id,))
-    
     conn.commit(); conn.close()
     await interaction_response_method(response_msg)
 
-# --- 5. CÁC LỚP UI (Nằm bên ngoài class) ---
+# --- 5. CÁC LỚP UI (BÊN NGOÀI CLASS) ---
 class MatchInternalIDModal(ui.Modal, title='Nhập ID Nội bộ cho Kèo'):
     def __init__(self, selected_match_data: dict): super().__init__(); self.selected_match_data = selected_match_data
     internal_id = ui.TextInput(label='ID nội bộ (ví dụ: vnth1)', required=True, style=discord.TextStyle.short)
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(thinking=True, ephemeral=True)
         await internal_create_match(interaction, self.internal_id.value, self.selected_match_data['team_a'], self.selected_match_data['team_b'], self.selected_match_data['api_id'])
-
 class MatchSelect(ui.Select):
     def __init__(self, matches_data: list):
         options = [discord.SelectOption(label=m['label'], description=m['description'], value=m['value']) for m in matches_data]
@@ -439,11 +424,9 @@ class MatchSelect(ui.Select):
     async def callback(self, interaction: discord.Interaction):
         modal = MatchInternalIDModal(selected_match_data=self.matches_data_dict[self.values[0]])
         await interaction.response.send_modal(modal)
-
 class MatchSelectView(ui.View):
     def __init__(self, matches_data: list):
         super().__init__(timeout=180); self.add_item(MatchSelect(matches_data))
-
 class SettingsModal(ui.Modal, title='Cài đặt chung cho Bot'):
     def __init__(self):
         super().__init__()
@@ -458,10 +441,9 @@ class SettingsModal(ui.Modal, title='Cài đặt chung cho Bot'):
             client.auto_find_task.change_interval(hours=frequency)
             await interaction.response.send_message("✅ Cài đặt đã được cập nhật!", ephemeral=True)
         except ValueError: await interaction.response.send_message("Lỗi: Vui lòng chỉ nhập số nguyên.", ephemeral=True)
-
 class ChallengeView(ui.View):
     def __init__(self):
-        super().__init__(timeout=None) # View vĩnh viễn
+        super().__init__(timeout=None)
     @ui.button(label="Chấp nhận (Accept)", style=discord.ButtonStyle.green, custom_id="challenge_accept")
     async def accept(self, interaction: discord.Interaction, button: ui.Button):
         conn = sqlite3.connect('database.db'); cursor = conn.cursor()
@@ -495,7 +477,7 @@ class ChallengeView(ui.View):
         await interaction.message.edit(content=f"Kèo thách đấu đã bị từ chối bởi {interaction.user.mention}.", view=None)
         await interaction.response.send_message("Bạn đã từ chối kèo.", ephemeral=True)
 
-# --- 6. HÀM API HELPER (Nằm bên ngoài class) ---
+# --- 6. HÀM API HELPER (BÊN NGOÀI CLASS) ---
 def get_team_id(team_name: str) -> int | None:
     if not RAPIDAPI_KEY: return None
     url = "https://api-football-v1.p.rapidapi.com/v3/teams"; querystring = {"search": team_name}; headers = {"X-RapidAPI-Key": RAPIDAPI_KEY, "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"}
@@ -537,7 +519,7 @@ def get_upcoming_fixtures_from_watchlist(days_ahead=3):
     all_fixtures.sort(key=lambda f: f['fixture']['timestamp'])
     return all_fixtures
 
-# --- 7. CÁC LỆNH (COMMANDS) (Nằm bên ngoài class) ---
+# --- 7. CÁC LỆNH (COMMANDS) (BÊN NGOÀI CLASS) ---
 
 # --- Nhóm Lệnh User ---
 @client.tree.command(name="register", description="Đăng ký tài khoản để nhận token bắt đầu.")
@@ -820,12 +802,18 @@ async def cancel_match(interaction: discord.Interaction, id: str):
     refund_msg = f"🚫 Kèo `{id}` đã bị hủy! Hoàn tiền:\n"
     if not bets: refund_msg += "- Không có ai cược pool.\n"
     for user_id, amount in bets: update_balance(user_id, amount); user = await client.fetch_user(user_id); refund_msg += f"- Pool: {user.mention} nhận lại {amount} token.\n"
-    cursor.execute("SELECT challenger_id, opponent_id, amount FROM challenges WHERE match_id = ? AND status = 'accepted'", (id,)); challenges = cursor.fetchall()
+    cursor.execute("SELECT challenger_id, opponent_id, amount FROM challenges WHERE match_id = ? AND (status = 'accepted' OR status = 'pending')", (id,)); challenges = cursor.fetchall()
     if not challenges: refund_msg += "- Không có kèo 1v1 nào.\n"
     for p1_id, p2_id, amount in challenges:
-        update_balance(p1_id, amount); update_balance(p2_id, amount)
-        p1, p2 = await client.fetch_user(p1_id), await client.fetch_user(p2_id)
-        refund_msg += f"- 1v1: {p1.mention} và {p2.mention} mỗi người nhận lại {amount} token.\n"
+        # Chỉ hoàn tiền cho người đã 'accepted', người 'pending' không bị trừ
+        cursor.execute("SELECT status FROM challenges WHERE challenger_id = ? AND opponent_id = ? AND match_id = ?", (p1_id, p2_id, id))
+        chal_status = cursor.fetchone()[0]
+        if chal_status == 'accepted':
+            update_balance(p1_id, amount); update_balance(p2_id, amount)
+            p1, p2 = await client.fetch_user(p1_id), await client.fetch_user(p2_id)
+            refund_msg += f"- 1v1 (Accepted): {p1.mention} và {p2.mention} mỗi người nhận lại {amount} token.\n"
+        else: # Pending
+             p1 = await client.fetch_user(p1_id); refund_msg += f"- 1v1 (Pending): Kèo của {p1.mention} đã bị hủy.\n"
     cursor.execute("UPDATE matches SET status = 'cancelled' WHERE match_id = ?", (id,))
     cursor.execute("UPDATE challenges SET status = 'cancelled' WHERE match_id = ? AND (status = 'accepted' OR status = 'pending')", (id,))
     conn.commit(); conn.close()
@@ -945,7 +933,7 @@ async def autofind_stop(interaction: discord.Interaction):
     await interaction.response.send_message(f'❌ Đã tắt tính năng tự động tìm kèo. Bot sẽ ngừng ở lần lặp tiếp theo.')
 client.tree.add_command(autofind_group)
 
-# --- 8. Xử lý Lỗi ---
+# --- 8. Xử lý Lỗi (BÊN NGOÀI CLASS) ---
 @client.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.errors.MissingPermissions):
@@ -958,10 +946,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         print(f"Lỗi app command không xác định: {error}")
         if not interaction.response.is_done(): await interaction.response.send_message(f"Đã xảy ra lỗi: {error}", ephemeral=True)
 
-# --- 9. CHẠY BOT ---
-# (Thêm file keep_alive.py để chạy 24/7)
-from keep_alive import keep_alive # Đảm bảo bạn đã tạo file keep_alive.py
-
+# --- 9. CHẠY BOT (BÊN NGOÀI CLASS) ---
 TOKEN = os.environ.get('DISCORD_TOKEN')
 if TOKEN is None:
     print("LỖI: Không tìm thấy DISCORD_TOKEN. Hãy thiết lập nó trong Secrets.")
