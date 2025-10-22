@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from supabase import create_client, Client 
 import typing
 import random
+import discord.utils # Import để check role admin
 
 # Import tệp keep_alive
 from keep_alive import keep_alive 
@@ -34,9 +35,17 @@ STARTING_TOKENS = 100
 DAILY_REWARD = 50
 DAILY_COOLDOWN_HOURS = 24 
 
+# Tên Role Admin
+ADMIN_ROLE = "Bot Admin" 
+
 # Định nghĩa các ô trên bàn Roulette
 RED_NUMBERS = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]
 BLACK_NUMBERS = [2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35]
+
+# --- (ĐÃ CẬP NHẬT) CÀI ĐẶT RATE LIMIT TOÀN CỤC ---
+# 30 lệnh, mỗi 60 giây, áp dụng cho TOÀN BỘ BOT (BucketType.default)
+global_cooldown = commands.CooldownMapping.from_cooldown(30, 60.0, commands.BucketType.default)
+
 
 # --- Quản lý Dữ liệu (Supabase) ---
 
@@ -93,13 +102,67 @@ def update_balance(user_id: int, amount: int) -> typing.Optional[int]:
             return None
 
 
+# --- (ĐÃ CẬP NHẬT) HÀM KIỂM TRA COOLDOWN TOÀN CỤC ---
+@bot.before_invoke
+async def global_check_before_command(ctx):
+    """Kiểm tra rate limit trước khi thực thi bất kỳ lệnh nào."""
+    
+    # 1. Bỏ qua cho lệnh !help (vì nó không gọi database)
+    if ctx.command.name == 'help':
+        return
+        
+    # 2. Lấy bộ đếm TOÀN CỤC (default bucket)
+    bucket = global_cooldown.get_bucket(ctx.message) # Dùng ctx.message chỉ để làm khóa
+        
+    # 3. Kiểm tra xem bot có vi phạm rate limit không
+    retry_after = bucket.update_rate_limit()
+    if retry_after:
+        # Nếu vi phạm, ném ra lỗi Cooldown
+        raise commands.CommandOnCooldown(bucket, retry_after, commands.BucketType.default)
+
+
 # --- Sự kiện Bot ---
 @bot.event
 async def on_ready():
     print(f'Bot {bot.user.name} đã sẵn sàng!')
     print('------')
 
-# --- Lệnh Tùy chỉnh !help ---
+# --- (ĐÃ CẬP NHẬT) HÀM XỬ LÝ LỖI TOÀN CỤC ---
+@bot.event
+async def on_command_error(ctx, error):
+    """Xử lý tất cả các lỗi tập trung tại một nơi."""
+    
+    # 1. Xử lý lỗi Rate Limit (ĐÃ CẬP NHẬT)
+    if isinstance(error, commands.CommandOnCooldown):
+        seconds = error.retry_after
+        # Thông báo rằng BOT đang bị quá tải, không phải lỗi của người dùng
+        await ctx.send(f"⏳ Bot đang xử lý quá nhiều yêu cầu! Vui lòng thử lại sau **{seconds:.1f} giây**.", delete_after=5)
+        return
+
+    # 2. Xử lý lỗi Admin
+    if isinstance(error, commands.MissingRole):
+        await ctx.send(f"Rất tiếc {ctx.author.mention}, bạn không có quyền dùng lệnh này. Cần role `{ADMIN_ROLE}`.")
+        return
+
+    # 3. Xử lý lỗi nhập sai
+    if isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send(f'Cú pháp sai! Gõ `!help` để xem hướng dẫn lệnh `{ctx.command.name}`.')
+        return
+        
+    if isinstance(error, commands.BadArgument):
+        # Phân biệt lỗi cho các lệnh khác nhau
+        if ctx.command.name in ['admin_give', 'admin_set', 'chuyenxu']:
+             await ctx.send('Không tìm thấy người dùng đó hoặc số tiền không hợp lệ.')
+        else:
+             await ctx.send('Số tiền cược hoặc số đoán phải là một con số hợp lệ.')
+        return
+
+    # 4. Báo lỗi chung
+    print(f"Lỗi không xác định từ lệnh '{ctx.command.name}': {error}")
+    await ctx.send('Đã xảy ra lỗi. Vui lòng thử lại sau.')
+
+
+# --- Lệnh Tùy chỉnh !help (ĐÃ CẬP NHẬT) ---
 @bot.command(name='help')
 async def custom_help(ctx):
     """Hiển thị bảng trợ giúp tùy chỉnh."""
@@ -144,11 +207,21 @@ async def custom_help(ctx):
         inline=False
     )
     
+    # Thêm phần Admin vào Help
+    embed.add_field(
+        name="🛠️ Lệnh Admin (Yêu cầu Role 'Bot Admin')", 
+        value="`!admin_give @user <số_tiền>` - Cộng/Trừ token.\n"
+              "`!admin_set @user <số_tiền>` - Đặt chính xác số token.\n"
+              "`!admin_createcode <code> <reward>` - Tạo giftcode mới.\n"
+              "`!admin_deletecode <code>` - Xóa giftcode.",
+        inline=False
+    )
+    
     embed.set_footer(text="Chúc bạn may mắn!")
     await ctx.send(embed=embed)
 
 
-# --- Lệnh Token & Xã hội (ĐÃ CẬP NHẬT) ---
+# --- Lệnh Token & Xã hội ---
 
 @bot.command(name='kiemtra', aliases=['balance', 'bal', 'sodu'])
 async def balance_check(ctx):
@@ -283,16 +356,79 @@ async def transfer_tokens(ctx, recipient: discord.Member, amount: int):
     except Exception as e:
         await ctx.send(f'Đã xảy ra lỗi trong quá trình chuyển: {e}')
     
-@transfer_tokens.error
-async def transfer_error(ctx, error):
-    if isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send('Cú pháp sai! `!chuyenxu @TênNgườiDùng <SốTiền>`')
-    elif isinstance(error, commands.BadArgument):
-        await ctx.send('Không tìm thấy người dùng đó hoặc số tiền không hợp lệ.')
-    else:
-        print(f"Lỗi !chuyenxu: {error}")
+# --- LỆNH ADMIN ---
 
-# --- Lệnh Trò chơi Mới (ĐÃ CẬP NHẬT) ---
+@bot.command(name='admin_give')
+@commands.has_role(ADMIN_ROLE)
+async def admin_give(ctx, member: discord.Member, amount: int):
+    """(ADMIN) Cộng/Trừ token cho người dùng."""
+    if amount == 0:
+        await ctx.send("Số lượng phải khác 0.")
+        return
+        
+    user_id = member.id
+    new_balance = update_balance(user_id, amount)
+    
+    if amount > 0:
+        await ctx.send(f"✅ Đã cộng **{amount}** 🪙 cho {member.mention}. Số dư mới: **{new_balance}** 🪙.")
+    else:
+        await ctx.send(f"✅ Đã trừ **{abs(amount)}** 🪙 từ {member.mention}. Số dư mới: **{new_balance}** 🪙.")
+
+@bot.command(name='admin_set')
+@commands.has_role(ADMIN_ROLE)
+async def admin_set(ctx, member: discord.Member, amount: int):
+    """(ADMIN) Đặt số dư của người dùng về một con số cụ thể."""
+    if amount < 0:
+        await ctx.send("Không thể set số dư âm.")
+        return
+        
+    try:
+        # Gọi hàm 'set_balance' mới
+        supabase.rpc('set_balance', {
+            'user_id_input': member.id,
+            'amount_input': amount
+        }).execute()
+        
+        await ctx.send(f"✅ Đã set số dư của {member.mention} thành **{amount}** 🪙.")
+    except Exception as e:
+        await ctx.send(f"Đã xảy ra lỗi khi set balance: {e}")
+
+@bot.command(name='admin_createcode')
+@commands.has_role(ADMIN_ROLE)
+async def admin_createcode(ctx, code: str, reward: int):
+    """(ADMIN) Tạo một giftcode mới."""
+    if reward <= 0:
+        await ctx.send("Phần thưởng phải lớn hơn 0.")
+        return
+    
+    code = code.upper() # Luôn viết hoa code
+    try:
+        supabase.table('gift_codes').insert({
+            'code': code,
+            'reward': reward
+        }).execute()
+        
+        await ctx.send(f"✅ Đã tạo giftcode `{code}` trị giá **{reward}** 🪙.")
+    except Exception as e:
+        await ctx.send(f"Lỗi! Code `{code}` có thể đã tồn tại. ({e})")
+
+@bot.command(name='admin_deletecode')
+@commands.has_role(ADMIN_ROLE)
+async def admin_deletecode(ctx, code: str):
+    """(ADMIN) Xóa một giftcode."""
+    code = code.upper()
+    try:
+        response = supabase.table('gift_codes').delete().eq('code', code).execute()
+        
+        if response.data: 
+            await ctx.send(f"✅ Đã xóa thành công giftcode `{code}`.")
+        else:
+            await ctx.send(f"Lỗi! Không tìm thấy giftcode nào tên là `{code}`.")
+    except Exception as e:
+        await ctx.send(f"Đã xảy ra lỗi khi xóa code: {e}")
+
+
+# --- Lệnh Trò chơi Mới ---
 
 @bot.command(name='tungxu', aliases=['coinflip'])
 async def coinflip(ctx, bet_amount: int, choice: str):
@@ -354,7 +490,7 @@ async def dice_roll(ctx, bet_amount: int, guess: int):
 
     await ctx.send(embed=embed)
 
-# --- Lệnh Roulette (ĐÃ CẬP NHẬT) ---
+# --- Lệnh Roulette ---
 
 @bot.command(name='quay', aliases=['roulette'])
 async def roulette(ctx, bet_amount: int, bet_type: str):
@@ -417,18 +553,6 @@ async def roulette(ctx, bet_amount: int, bet_type: str):
     embed = discord.Embed(title="Kết Quả Roulette 🎰", description=result_message, color=embed_color)
     await ctx.send(embed=embed)
 
-# --- Xử lý lỗi chung ---
-@coinflip.error
-@dice_roll.error
-@roulette.error
-async def game_error(ctx, error):
-    if isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send(f'Cú pháp sai! Gõ `!help` để xem hướng dẫn lệnh `{ctx.command.name}`.')
-    elif isinstance(error, commands.BadArgument):
-        await ctx.send('Số tiền cược hoặc số đoán phải là một con số hợp lệ.')
-    else:
-        print(f"Lỗi lệnh {ctx.command.name}: {error}")
-        await ctx.send('Đã xảy ra lỗi. Vui lòng thử lại.')
 
 # --- Chạy Bot ---
 if TOKEN:
