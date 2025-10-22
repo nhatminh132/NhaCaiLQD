@@ -3,8 +3,12 @@ from discord.ext import commands
 import os
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
-from supabase import create_client, Client # Mới
-import typing # Mới
+from supabase import create_client, Client 
+import typing
+import random
+
+# Import tệp keep_alive
+from keep_alive import keep_alive 
 
 # --- Tải Token và Cài đặt Bot ---
 load_dotenv()
@@ -42,10 +46,8 @@ def get_user_data(user_id: int) -> typing.Dict:
     Nếu chưa có, tự động tạo mới.
     """
     try:
-        # 1. Thử lấy dữ liệu
         response = supabase.table('profiles').select('*').eq('user_id', user_id).execute()
         
-        # 2. Nếu không tìm thấy (lần đầu chơi)
         if not response.data:
             print(f"Tạo profile mới cho user {user_id}")
             insert_response = supabase.table('profiles').insert({
@@ -56,17 +58,15 @@ def get_user_data(user_id: int) -> typing.Dict:
             }).execute()
             return insert_response.data[0]
             
-        # 3. Nếu tìm thấy, trả về
         return response.data[0]
 
     except Exception as e:
         print(f"Lỗi khi get_user_data cho {user_id}: {e}")
-        return None # Trả về None nếu có lỗi nghiêm trọng
+        return None 
 
 def update_balance(user_id: int, amount: int) -> typing.Optional[int]:
     """
     Sử dụng RPC function 'adjust_balance' để cộng/trừ tiền.
-    Đây là cách an toàn, tránh race condition.
     Trả về số dư MỚI.
     """
     try:
@@ -102,13 +102,13 @@ async def on_ready():
 # --- Lệnh Tùy chỉnh !help ---
 @bot.command(name='help')
 async def custom_help(ctx):
-    # (Giữ nguyên lệnh !help của bạn, không cần thay đổi)
+    """Hiển thị bảng trợ giúp tùy chỉnh."""
     embed = discord.Embed(
         title="Trợ giúp Bot Casino 🎰 (Phiên bản Supabase)",
         description="Chào mừng đến với Bot Roulette và các trò chơi khác!",
         color=discord.Color.gold()
     )
-    # ... (Copy/paste nội dung lệnh !help cũ của bạn vào đây) ...
+    
     embed.add_field(
         name="🪙 Lệnh Cơ bản", 
         value="`!help` - Hiển thị bảng trợ giúp này.\n"
@@ -126,7 +126,25 @@ async def custom_help(ctx):
               "`!xucxac <số_tiền> <số_đoán>` - (aliases: `!dice`) Cược đoán số (1-6), thắng 1 ăn 5.",
         inline=False
     )
-    # ...
+
+    embed.add_field(
+        name="🎰 Lệnh Roulette (`!quay`)",
+        value="`!quay <số_tiền> <loại_cược>`\n"
+              "**Loại cược (1 ăn 1):**\n"
+              "• `đỏ`, `đen`\n"
+              "• `lẻ`, `chẵn`\n"
+              "• `nửa1` (số 1-18)\n"
+              "• `nửa2` (số 19-36)\n"
+              "**Loại cược (1 ăn 2):**\n"
+              "• `tá1` (số 1-12)\n"
+              "• `tá2` (số 13-24)\n"
+              "• `tá3` (số 25-36)\n"
+              "**Loại cược (1 ăn 35):**\n"
+              "• Một số cụ thể (ví dụ: `13`)",
+        inline=False
+    )
+    
+    embed.set_footer(text="Chúc bạn may mắn!")
     await ctx.send(embed=embed)
 
 
@@ -146,12 +164,9 @@ async def daily_reward(ctx):
     user_data = get_user_data(user_id)
     
     if user_data.get('last_daily'):
-        # Chuyển đổi chuỗi ISO (Supabase trả về) thành datetime object
-        # Supabase trả về dạng "2023-10-27T10:00:00+00:00"
         last_daily_time = datetime.fromisoformat(user_data['last_daily'])
         cooldown = timedelta(hours=DAILY_COOLDOWN_HOURS)
         
-        # So sánh với múi giờ UTC
         if datetime.now(timezone.utc) < last_daily_time + cooldown:
             time_left = (last_daily_time + cooldown) - datetime.now(timezone.utc)
             hours_left = int(time_left.total_seconds() // 3600)
@@ -159,10 +174,8 @@ async def daily_reward(ctx):
             await ctx.send(f'{ctx.author.mention}, bạn cần chờ **{hours_left} giờ {minutes_left} phút** nữa.')
             return
 
-    # Cho phép nhận thưởng (Dùng RPC)
     new_balance = update_balance(user_id, DAILY_REWARD)
     
-    # Cập nhật thời gian
     try:
         supabase.table('profiles').update({
             'last_daily': datetime.now(timezone.utc).isoformat()
@@ -178,7 +191,6 @@ async def redeem_code(ctx, code_to_redeem: str):
     user_data = get_user_data(user_id)
     code_to_redeem = code_to_redeem.upper()
     
-    # 1. Kiểm tra code có tồn tại trong DB không
     try:
         code_response = supabase.table('gift_codes').select('*').eq('code', code_to_redeem).execute()
         if not code_response.data:
@@ -188,16 +200,13 @@ async def redeem_code(ctx, code_to_redeem: str):
         await ctx.send(f'Lỗi khi kiểm tra code: {e}')
         return
         
-    # 2. Kiểm tra user đã dùng code này chưa (trong mảng 'used_codes')
     if code_to_redeem in user_data['used_codes']:
         await ctx.send(f'Bạn đã sử dụng mã `{code_to_redeem}` này rồi.')
         return
         
-    # 3. Hợp lệ -> Trao thưởng
     reward = code_response.data[0]['reward']
     new_balance = update_balance(user_id, reward)
     
-    # 4. Thêm code này vào danh sách đã dùng của user
     try:
         new_code_list = user_data['used_codes'] + [code_to_redeem]
         supabase.table('profiles').update({
@@ -215,7 +224,6 @@ async def leaderboard(ctx, top_n: int = 10):
         top_n = 10
         
     try:
-        # Lấy top 10 người, sắp xếp theo 'balance'
         response = supabase.table('profiles').select('user_id', 'balance') \
             .order('balance', desc=True) \
             .limit(top_n) \
@@ -267,15 +275,11 @@ async def transfer_tokens(ctx, recipient: discord.Member, amount: int):
         await ctx.send(f'Bạn không đủ tiền. Bạn chỉ có **{sender_data["balance"]}** 🪙.')
         return
         
-    # Thực hiện chuyển (2 lần gọi RPC)
-    # Đây không phải là một "transaction" hoàn hảo, nhưng đủ tốt cho bot này
     try:
-        update_balance(sender_id, -amount) # Trừ tiền người gửi
-        new_recipient_balance = update_balance(recipient_id, amount) # Cộng tiền người nhận
+        update_balance(sender_id, -amount) 
+        new_recipient_balance = update_balance(recipient_id, amount) 
         
         await ctx.send(f'✅ {ctx.author.mention} đã chuyển **{amount}** 🪙 cho {recipient.mention}!')
-        # (Tùy chọn) Gửi DM cho người nhận
-        # await recipient.send(f'Bạn đã nhận được **{amount}** 🪙 từ {ctx.author.mention}. Số dư mới: **{new_recipient_balance}** 🪙.')
     except Exception as e:
         await ctx.send(f'Đã xảy ra lỗi trong quá trình chuyển: {e}')
     
@@ -368,7 +372,6 @@ async def roulette(ctx, bet_amount: int, bet_type: str):
     payout_rate = 0 
     is_win = False
     
-    # (Phần logic game này giữ nguyên, không cần đổi)
     try:
         bet_number = int(bet_type)
         if 0 <= bet_number <= 36:
@@ -429,6 +432,9 @@ async def game_error(ctx, error):
 
 # --- Chạy Bot ---
 if TOKEN:
+    # Gọi hàm keep_alive để chạy web server
+    keep_alive() 
+    # Chạy bot Discord
     bot.run(TOKEN)
 else:
     print("LỖI: Không tìm thấy DISCORD_TOKEN trong file .env hoặc Secrets")
