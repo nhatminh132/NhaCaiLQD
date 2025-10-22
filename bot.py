@@ -39,360 +39,202 @@ game_channel_id = None # Kênh game Tài Xỉu
 current_bets = {} # Cược ván Tài Xỉu hiện tại
 bot.blackjack_games = {} # Lưu các ván Blackjack
 bot.mines_games = {} # Lưu các ván Dò Mìn
+bot.users_in_animation = set() # (MỚI) Dùng để khóa lệnh khi game có hiệu ứng
 
 # --- ĐỊNH NGHĨA HẰNG SỐ ---
+# (Toàn bộ hằng số giữ nguyên)
 STARTING_TOKENS = 100
 DAILY_REWARD = 50
 DAILY_COOLDOWN_HOURS = 24 
 ADMIN_ROLE = "Bot Admin" 
-
-# Roulette
 RED_NUMBERS = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]
 BLACK_NUMBERS = [2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35]
-
-# Bầu Cua
-BAU_CUA_FACES = {
-    'bầu': 'Bầu 🍐', 'bau': 'Bầu 🍐', '🍐': 'Bầu 🍐',
-    'cua': 'Cua 🦀', '🦀': 'Cua 🦀',
-    'tôm': 'Tôm 🦐', 'tom': 'Tôm 🦐', '🦐': 'Tôm 🦐',
-    'cá': 'Cá 🐟', 'ca': 'Cá 🐟', '🐟': 'Cá 🐟',
-    'gà': 'Gà 🐓', 'ga': 'Gà 🐓', '🐓': 'Gà 🐓',
-    'nai': 'Nai 🦌', '🦌': 'Nai 🦌'
-}
+BAU_CUA_FACES = {'bầu': 'Bầu 🍐', 'bau': 'Bầu 🍐', '🍐': 'Bầu 🍐', 'cua': 'Cua 🦀', '🦀': 'Cua 🦀', 'tôm': 'Tôm 🦐', 'tom': 'Tôm 🦐', '🦐': 'Tôm 🦐', 'cá': 'Cá 🐟', 'ca': 'Cá 🐟', '🐟': 'Cá 🐟', 'gà': 'Gà 🐓', 'ga': 'Gà 🐓', '🐓': 'Gà 🐓', 'nai': 'Nai 🦌', '🦌': 'Nai 🦌'}
 BAU_CUA_LIST = ['Bầu 🍐', 'Cua 🦀', 'Tôm 🦐', 'Cá 🐟', 'Gà 🐓', 'Nai 🦌']
-
-# Đua Ngựa
-NUM_HORSES = 6
-RACE_LENGTH = 20
-
-# Máy Xèng (Slots)
-# (Emoji, Trọng số xuất hiện, Payout cho 3x)
-SLOT_SYMBOLS = [
-    ('🍒', 10, 10), # (10/38)
-    ('🍋', 9, 15),  # (9/38)
-    ('🍊', 8, 20),  # (8/38)
-    ('🍓', 5, 30),  # (5/38)
-    ('🔔', 3, 50),  # (3/38)
-    ('💎', 2, 100), # (2/38)
-    ('7️⃣', 1, 200)  # (1/38) -> Jackpot
-]
+NUM_HORSES = 6; RACE_LENGTH = 20
+SLOT_SYMBOLS = [('🍒', 10, 10), ('🍋', 9, 15), ('🍊', 8, 20), ('🍓', 5, 30), ('🔔', 3, 50), ('💎', 2, 100), ('7️⃣', 1, 200)]
 SLOT_WHEEL, SLOT_WEIGHTS, SLOT_PAYOUTS = [], [], {}
-for (symbol, weight, payout) in SLOT_SYMBOLS:
-    SLOT_WHEEL.append(symbol)
-    SLOT_WEIGHTS.append(weight)
-    SLOT_PAYOUTS[symbol] = payout
-
-# Cao/Thấp (Hilo) & Blackjack
+for (symbol, weight, payout) in SLOT_SYMBOLS: SLOT_WHEEL.append(symbol); SLOT_WEIGHTS.append(weight); SLOT_PAYOUTS[symbol] = payout
 CARD_SUITS = ['♥️', '♦️', '♣️', '♠️']
-CARD_RANKS = {
-    '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, '10': 10,
-    'J': 11, 'Q': 12, 'K': 13, 'A': 14 # A là 14 trong Hilo, 1 hoặc 11 trong Blackjack
-}
+CARD_RANKS = {'2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, '10': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 14}
 
 # --- CÀI ĐẶT RATE LIMIT TOÀN CỤC ---
-# 30 lệnh, mỗi 60 giây, áp dụng cho TOÀN BỘ BOT (BucketType.default)
 global_cooldown = commands.CooldownMapping.from_cooldown(30, 60.0, commands.BucketType.default)
 
-
 # --- QUẢN LÝ DỮ LIỆU (SUPABASE) ---
-# (Toàn bộ các hàm get_user_data, update_balance được giữ nguyên)
+# (Hàm get_user_data, update_balance, get_jackpot_data giữ nguyên)
 def get_user_data(user_id: int) -> typing.Dict:
-    """Lấy dữ liệu người dùng từ Supabase, tạo mới nếu chưa có."""
     try:
         response = supabase.table('profiles').select('*').eq('user_id', user_id).execute()
         if not response.data:
-            insert_response = supabase.table('profiles').insert({
-                'user_id': user_id, 'balance': STARTING_TOKENS, 'last_daily': None, 'used_codes': []
-            }).execute()
+            insert_response = supabase.table('profiles').insert({'user_id': user_id, 'balance': STARTING_TOKENS, 'last_daily': None, 'used_codes': []}).execute()
             return insert_response.data[0]
         return response.data[0]
-    except Exception as e:
-        print(f"Lỗi khi get_user_data cho {user_id}: {e}")
-        return None 
-
+    except Exception as e: print(f"Lỗi khi get_user_data cho {user_id}: {e}"); return None 
 def update_balance(user_id: int, amount: int) -> typing.Optional[int]:
-    """Sử dụng RPC function 'adjust_balance' để cộng/trừ tiền."""
     try:
         response = supabase.rpc('adjust_balance', {'user_id_input': user_id, 'amount_input': amount}).execute()
         return response.data
     except Exception as e:
-        print(f"Lỗi khi update_balance cho {user_id}: {e}")
-        get_user_data(user_id) # Thử tạo user
+        print(f"Lỗi khi update_balance cho {user_id}: {e}"); get_user_data(user_id)
         try:
             response = supabase.rpc('adjust_balance', {'user_id_input': user_id, 'amount_input': amount}).execute()
             return response.data
-        except Exception as e2:
-            print(f"Lỗi lần 2 khi update_balance: {e2}")
-            return None
-
-# Hàm lấy Hũ và Lịch sử (cho Tài Xỉu)
+        except Exception as e2: print(f"Lỗi lần 2 khi update_balance: {e2}"); return None
 def get_jackpot_data():
     try:
         data = supabase.table('jackpot').select('*').eq('game_name', 'taixiu').execute().data[0]
-        return data['pool_amount'], data['history'][-10:] # Lấy 10 kết quả gần nhất
+        return data['pool_amount'], data['history'][-10:]
     except Exception as e:
-        print(f"Loi khi lay jackpot: {e}")
-        # Nếu chưa có, tạo mới
-        supabase.table('jackpot').insert({'game_name': 'taixiu', 'pool_amount': 0, 'history': []}).execute()
-        return 0, []
+        print(f"Loi khi lay jackpot: {e}"); supabase.table('jackpot').insert({'game_name': 'taixiu', 'pool_amount': 0, 'history': []}).execute(); return 0, []
 
 # --- HÀM KIỂM TRA COOLDOWN TOÀN CỤC ---
 @bot.before_invoke
 async def global_check_before_command(ctx):
-    """Kiểm tra rate limit trước khi thực thi bất kỳ lệnh nào."""
-    if ctx.command.name == 'help':
-        return
+    if ctx.command.name == 'help': return
     bucket = global_cooldown.get_bucket(ctx.message)
     retry_after = bucket.update_rate_limit()
-    if retry_after:
-        raise commands.CommandOnCooldown(bucket, retry_after, commands.BucketType.default)
+    if retry_after: raise commands.CommandOnCooldown(bucket, retry_after, commands.BucketType.default)
 
 # --- SỰ KIỆN BOT ---
 @bot.event
 async def on_ready():
-    # Thêm dòng này để bot nhận diện các Nút bấm (Views) sau khi khởi động lại
-    bot.add_view(TaiXiuGameView()) 
-    print(f'Bot {bot.user.name} đã sẵn sàng!')
-    print('------')
+    bot.add_view(TaiXiuGameView()); print(f'Bot {bot.user.name} đã sẵn sàng!'); print('------')
 
-# --- HÀM XỬ LÝ LỖI TOÀN CỤC ---
+# --- HÀM XỬ LÝ LỖI TOÀN CỤC (ĐÃ CẬP NHẬT) ---
 @bot.event
 async def on_command_error(ctx, error):
-    """Xử lý tất cả các lỗi tập trung tại một nơi."""
-    
     # 1. Lỗi Rate Limit
     if isinstance(error, commands.CommandOnCooldown):
         seconds = error.retry_after
         await ctx.send(f"⏳ Bot đang xử lý quá nhiều yêu cầu! Vui lòng thử lại sau **{seconds:.1f} giây**.", delete_after=5)
         return
-
     # 2. Lỗi Admin
     if isinstance(error, commands.MissingRole):
         await ctx.send(f"Rất tiếc {ctx.author.mention}, bạn không có quyền dùng lệnh này. Cần role `{ADMIN_ROLE}`.")
         return
-
     # 3. Lỗi nhập sai
     if isinstance(error, commands.MissingRequiredArgument):
         await ctx.send(f'Cú pháp sai! Gõ `!help` để xem hướng dẫn lệnh `{ctx.command.name}`.')
         return
-        
     if isinstance(error, commands.BadArgument):
-        if ctx.command.name in ['admin_give', 'admin_set', 'chuyenxu']:
-             await ctx.send('Không tìm thấy người dùng đó hoặc số tiền không hợp lệ.')
-        else:
-             await ctx.send('Số tiền cược hoặc số đoán/số ngựa không hợp lệ.')
+        if ctx.command.name in ['admin_give', 'admin_set', 'chuyenxu']: await ctx.send('Không tìm thấy người dùng đó hoặc số tiền không hợp lệ.')
+        else: await ctx.send('Số tiền cược hoặc số đoán/số ngựa không hợp lệ.')
         return
-        
-    # 4. Lỗi game đang diễn ra (cho game UI)
+    # 4. Lỗi game đang diễn ra (ĐÃ CẬP NHẬT)
     if isinstance(error, commands.CheckFailure):
-        await ctx.send(f"{ctx.author.mention}, bạn đang có một ván game khác (Blackjack/Dò Mìn) đang chạy!", ephemeral=True)
+        await ctx.send(f"⏳ {ctx.author.mention}, bạn đang có một trò chơi khác đang chạy. Vui lòng chờ cho nó kết thúc!", ephemeral=True, delete_after=5)
         return
-
     # 5. Báo lỗi chung
     print(f"Lỗi không xác định từ lệnh '{ctx.command.name}': {error}")
     await ctx.send('Đã xảy ra lỗi. Vui lòng thử lại sau.')
 
-
-# --- HÀM KIỂM TRA GAME ĐANG CHẠY (CHO GAME UI) ---
+# --- HÀM KIỂM TRA GAME ĐANG CHẠY (ĐÃ CẬP NHẬT) ---
 def is_user_in_game(ctx):
-    """Check xem user có đang chơi Blackjack hoặc Mines không."""
-    if ctx.author.id in bot.blackjack_games:
-        return False # Đang chơi game
-    if ctx.author.id in bot.mines_games:
-        return False # Đang chơi game
+    """Check xem user có đang chơi game UI hoặc game có hiệu ứng không."""
+    user_id = ctx.author.id
+    if user_id in bot.blackjack_games: return False # Đang chơi Blackjack
+    if user_id in bot.mines_games: return False # Đang chơi Mines
+    if user_id in bot.users_in_animation: return False # (MỚI) Đang chạy 1 game có hiệu ứng
     return True # Không chơi game, cho phép chạy lệnh
 
-
-# --- LỆNH !HELP (ĐÃ CẬP NHẬT) ---
+# --- LỆNH !HELP ---
+# (Giữ nguyên, không cần thay đổi)
 @bot.command(name='help')
 async def custom_help(ctx):
     embed = discord.Embed(title="Trợ giúp Bot Casino 🎰", color=discord.Color.gold())
-    
-    embed.add_field(name="🪙 Lệnh Cơ bản", 
-        value="`!help` - Hiển thị bảng trợ giúp này.\n"
-              "`!kiemtra` - (aliases: `!bal`, `!sodu`) Xem số dư token.\n"
-              "`!daily` - Nhận thưởng token hàng ngày.\n"
-              "`!code <mã>` - Nhập giftcode nhận thưởng.\n"
-              "`!chuyenxu @user <số_tiền>` - Chuyển token cho người khác.\n"
-              "`!bangxephang` - (aliases: `!top`) Xem 10 người giàu nhất.",
-        inline=False)
-    
-    embed.add_field(name="🎲 Trò chơi (Gõ lệnh)",
-        value="`!slots <số_tiền>` - Chơi máy xèng (có hiệu ứng).\n"
-              "`!hilo <số_tiền> <cao/thấp>` - Đoán lá bài tiếp theo (có hiệu ứng).\n"
-              "`!tungxu <số_tiền> <sấp/ngửa>` - Cược 50/50 (có hiệu ứng).\n"
-              "`!xucxac <số_tiền> <số_đoán>` - Đoán số (1-6), thắng 1 ăn 5 (có hiệu ứng).\n"
-              "`!baucua <số_tiền> <linh_vật>` - Cược Bầu Cua Tôm Cá (có hiệu ứng).\n"
-              "`!duangua <số_tiền> <số_ngựa>` - Cược đua ngựa (1-6), thắng 1 ăn 4.\n"
-              "`!quay <số_tiền> <loại_cược>` - Chơi Roulette (có hiệu ứng).",
-        inline=False)
-        
-    embed.add_field(name="🃏 Trò chơi (Giao diện UI)",
-        value="`!blackjack <số_tiền>` - (aliases: `!bj`) Chơi Xì dách với bot.\n"
-              "`!mines <số_tiền> <số_bom>` - Chơi Dò Mìn (tối đa 24 bom).",
-        inline=False)
-        
-    embed.add_field(name="🎮 Game 24/7 (Dùng Nút)",
-        value="Tìm kênh có game **Tài Xỉu** và dùng **Nút (Buttons)** để cược.",
-        inline=False)
-
-    embed.add_field(name="🛠️ Lệnh Admin", 
-        value="`!admin_give @user <số_tiền>` - Cộng/Trừ token.\n"
-              "`!admin_set @user <số_tiền>` - Đặt chính xác số token.\n"
-              "`!admin_createcode <code> <reward>` - Tạo giftcode.\n"
-              "`!admin_deletecode <code>` - Xóa giftcode.\n"
-              "`!start_taixiu` - Bắt đầu game Tài Xỉu 24/7 ở kênh này.\n"
-              "`!stop_taixiu` - Dừng game Tài Xỉu.",
-        inline=False)
-    
-    embed.set_footer(text="Chúc bạn may mắn!")
-    await ctx.send(embed=embed)
-
+    embed.add_field(name="🪙 Lệnh Cơ bản", value="`!help` - Hiển thị bảng trợ giúp này.\n`!kiemtra` - (aliases: `!bal`, `!sodu`) Xem số dư token.\n`!daily` - Nhận thưởng token hàng ngày.\n`!code <mã>` - Nhập giftcode nhận thưởng.\n`!chuyenxu @user <số_tiền>` - Chuyển token cho người khác.\n`!bangxephang` - (aliases: `!top`) Xem 10 người giàu nhất.", inline=False)
+    embed.add_field(name="🎲 Trò chơi (Gõ lệnh)", value="`!slots <số_tiền>` - Chơi máy xèng (có hiệu ứng).\n`!hilo <số_tiền> <cao/thấp>` - Đoán lá bài tiếp theo (có hiệu ứng).\n`!tungxu <số_tiền> <sấp/ngửa>` - Cược 50/50 (có hiệu ứng).\n`!xucxac <số_tiền> <số_đoán>` - Đoán số (1-6), thắng 1 ăn 5 (có hiệu ứng).\n`!baucua <số_tiền> <linh_vật>` - Cược Bầu Cua Tôm Cá (có hiệu ứng).\n`!duangua <số_tiền> <số_ngựa>` - Cược đua ngựa (1-6), thắng 1 ăn 4.\n`!quay <số_tiền> <loại_cược>` - Chơi Roulette (có hiệu ứng).", inline=False)
+    embed.add_field(name="🃏 Trò chơi (Giao diện UI)", value="`!blackjack <số_tiền>` - (aliases: `!bj`) Chơi Xì dách với bot.\n`!mines <số_tiền> <số_bom>` - Chơi Dò Mìn (tối đa 24 bom).", inline=False)
+    embed.add_field(name="🎮 Game 24/7 (Dùng Nút)", value="Tìm kênh có game **Tài Xỉu** và dùng **Nút (Buttons)** để cược.", inline=False)
+    embed.add_field(name="🛠️ Lệnh Admin", value="`!admin_give @user <số_tiền>` - Cộng/Trừ token.\n`!admin_set @user <số_tiền>` - Đặt chính xác số token.\n`!admin_createcode <code> <reward>` - Tạo giftcode.\n`!admin_deletecode <code>` - Xóa giftcode.\n`!start_taixiu` - Bắt đầu game Tài Xỉu 24/7 ở kênh này.\n`!stop_taixiu` - Dừng game Tài Xỉu.", inline=False)
+    embed.set_footer(text="Chúc bạn may mắn!"); await ctx.send(embed=embed)
 
 # --- LỆNH CƠ BẢN VÀ XÃ HỘI ---
-# (Tất cả các lệnh !kiemtra, !daily, !code, !bangxephang, !chuyenxu giữ nguyên)
+# (Tất cả giữ nguyên: !kiemtra, !daily, !code, !bangxephang, !chuyenxu)
 @bot.command(name='kiemtra', aliases=['balance', 'bal', 'sodu'])
 async def balance_check(ctx):
-    user_data = get_user_data(ctx.author.id)
-    if user_data:
-        await ctx.send(f'🪙 {ctx.author.mention}, bạn đang có **{user_data["balance"]}** token.')
-    else:
-        await ctx.send('Đã xảy ra lỗi khi lấy số dư của bạn.')
-
+    user_data = get_user_data(ctx.author.id); await ctx.send(f'🪙 {ctx.author.mention}, bạn đang có **{user_data["balance"]}** token.' if user_data else 'Đã xảy ra lỗi khi lấy số dư của bạn.')
 @bot.command(name='daily')
 async def daily_reward(ctx):
-    user_id = ctx.author.id
-    user_data = get_user_data(user_id)
+    user_id = ctx.author.id; user_data = get_user_data(user_id)
     if user_data.get('last_daily'):
-        last_daily_time = datetime.fromisoformat(user_data['last_daily'])
-        cooldown = timedelta(hours=DAILY_COOLDOWN_HOURS)
+        last_daily_time = datetime.fromisoformat(user_data['last_daily']); cooldown = timedelta(hours=DAILY_COOLDOWN_HOURS)
         if datetime.now(timezone.utc) < last_daily_time + cooldown:
-            time_left = (last_daily_time + cooldown) - datetime.now(timezone.utc)
-            hours_left = int(time_left.total_seconds() // 3600)
-            minutes_left = int((time_left.total_seconds() % 3600) // 60)
-            await ctx.send(f'{ctx.author.mention}, bạn cần chờ **{hours_left} giờ {minutes_left} phút** nữa.')
-            return
+            time_left = (last_daily_time + cooldown) - datetime.now(timezone.utc); hours_left = int(time_left.total_seconds() // 3600); minutes_left = int((time_left.total_seconds() % 3600) // 60)
+            await ctx.send(f'{ctx.author.mention}, bạn cần chờ **{hours_left} giờ {minutes_left} phút** nữa.'); return
     new_balance = update_balance(user_id, DAILY_REWARD)
-    try:
-        supabase.table('profiles').update({'last_daily': datetime.now(timezone.utc).isoformat()}).eq('user_id', user_id).execute()
-        await ctx.send(f'🎉 {ctx.author.mention}, bạn đã nhận được **{DAILY_REWARD}** token! Số dư mới: **{new_balance}** 🪙.')
-    except Exception as e:
-        await ctx.send(f'Đã xảy ra lỗi khi cập nhật thời gian: {e}')
-
+    try: supabase.table('profiles').update({'last_daily': datetime.now(timezone.utc).isoformat()}).eq('user_id', user_id).execute(); await ctx.send(f'🎉 {ctx.author.mention}, bạn đã nhận được **{DAILY_REWARD}** token! Số dư mới: **{new_balance}** 🪙.')
+    except Exception as e: await ctx.send(f'Đã xảy ra lỗi khi cập nhật thời gian: {e}')
 @bot.command(name='code')
 async def redeem_code(ctx, code_to_redeem: str):
-    user_id = ctx.author.id
-    user_data = get_user_data(user_id)
-    code_to_redeem = code_to_redeem.upper()
-    try:
-        code_response = supabase.table('gift_codes').select('*').eq('code', code_to_redeem).execute()
-        if not code_response.data:
-            await ctx.send(f'Mã `{code_to_redeem}` không tồn tại hoặc đã hết hạn.')
-            return
-    except Exception as e:
-        await ctx.send(f'Lỗi khi kiểm tra code: {e}'); return
-    if code_to_redeem in user_data['used_codes']:
-        await ctx.send(f'Bạn đã sử dụng mã `{code_to_redeem}` này rồi.'); return
-    reward = code_response.data[0]['reward']
-    new_balance = update_balance(user_id, reward)
-    try:
-        new_code_list = user_data['used_codes'] + [code_to_redeem]
-        supabase.table('profiles').update({'used_codes': new_code_list}).eq('user_id', user_id).execute()
-        await ctx.send(f'🎁 {ctx.author.mention}, bạn đã nhập thành công mã `{code_to_redeem}` và nhận được **{reward}** token! Số dư mới: **{new_balance}** 🪙.')
-    except Exception as e:
-        await ctx.send(f'Đã xảy ra lỗi khi cập nhật code đã dùng: {e}')
-
+    user_id = ctx.author.id; user_data = get_user_data(user_id); code_to_redeem = code_to_redeem.upper()
+    try: code_response = supabase.table('gift_codes').select('*').eq('code', code_to_redeem).execute()
+    except Exception as e: await ctx.send(f'Lỗi khi kiểm tra code: {e}'); return
+    if not code_response.data: await ctx.send(f'Mã `{code_to_redeem}` không tồn tại hoặc đã hết hạn.'); return
+    if code_to_redeem in user_data['used_codes']: await ctx.send(f'Bạn đã sử dụng mã `{code_to_redeem}` này rồi.'); return
+    reward = code_response.data[0]['reward']; new_balance = update_balance(user_id, reward)
+    try: new_code_list = user_data['used_codes'] + [code_to_redeem]; supabase.table('profiles').update({'used_codes': new_code_list}).eq('user_id', user_id).execute(); await ctx.send(f'🎁 {ctx.author.mention}, bạn đã nhập thành công mã `{code_to_redeem}` và nhận được **{reward}** token! Số dư mới: **{new_balance}** 🪙.')
+    except Exception as e: await ctx.send(f'Đã xảy ra lỗi khi cập nhật code đã dùng: {e}')
 @bot.command(name='bangxephang', aliases=['top'])
 async def leaderboard(ctx, top_n: int = 10):
     if top_n <= 0: top_n = 10
     try:
         response = supabase.table('profiles').select('user_id', 'balance').order('balance', desc=True).limit(top_n).execute()
-        if not response.data:
-            await ctx.send('Chưa có ai trong bảng xếp hạng.'); return
-        embed = discord.Embed(title=f"🏆 Bảng Xếp Hạng {top_n} Đại Gia 🏆", color=discord.Color.gold())
-        rank_count = 1
+        if not response.data: await ctx.send('Chưa có ai trong bảng xếp hạng.'); return
+        embed = discord.Embed(title=f"🏆 Bảng Xếp Hạng {top_n} Đại Gia 🏆", color=discord.Color.gold()); rank_count = 1
         for user_data in response.data:
-            user = ctx.guild.get_member(user_data['user_id'])
-            user_name = user.display_name if user else f"Người dùng (ID: ...{str(user_data['user_id'])[-4:]})"
-            embed.add_field(name=f"#{rank_count}: {user_name}", value=f"**{user_data['balance']}** 🪙", inline=False)
-            rank_count += 1
+            user = ctx.guild.get_member(user_data['user_id']); user_name = user.display_name if user else f"Người dùng (ID: ...{str(user_data['user_id'])[-4:]})"
+            embed.add_field(name=f"#{rank_count}: {user_name}", value=f"**{user_data['balance']}** 🪙", inline=False); rank_count += 1
         await ctx.send(embed=embed)
-    except Exception as e:
-        await ctx.send(f'Lỗi khi lấy bảng xếp hạng: {e}')
-
+    except Exception as e: await ctx.send(f'Lỗi khi lấy bảng xếp hạng: {e}')
 @bot.command(name='chuyenxu', aliases=['give', 'transfer'])
 async def transfer_tokens(ctx, recipient: discord.Member, amount: int):
-    sender_id = ctx.author.id
-    recipient_id = recipient.id
-    if sender_id == recipient_id:
-        await ctx.send('Bạn không thể tự chuyển cho chính mình!'); return
-    if amount <= 0:
-        await ctx.send('Số tiền chuyển phải lớn hơn 0!'); return
+    sender_id = ctx.author.id; recipient_id = recipient.id
+    if sender_id == recipient_id: await ctx.send('Bạn không thể tự chuyển cho chính mình!'); return
+    if amount <= 0: await ctx.send('Số tiền chuyển phải lớn hơn 0!'); return
     sender_data = get_user_data(sender_id)
-    if sender_data['balance'] < amount:
-        await ctx.send(f'Bạn không đủ tiền. Bạn chỉ có **{sender_data["balance"]}** 🪙.'); return
-    try:
-        update_balance(sender_id, -amount) 
-        new_recipient_balance = update_balance(recipient_id, amount) 
-        await ctx.send(f'✅ {ctx.author.mention} đã chuyển **{amount}** 🪙 cho {recipient.mention}!')
-    except Exception as e:
-        await ctx.send(f'Đã xảy ra lỗi trong quá trình chuyển: {e}')
-    
+    if sender_data['balance'] < amount: await ctx.send(f'Bạn không đủ tiền. Bạn chỉ có **{sender_data["balance"]}** 🪙.'); return
+    try: update_balance(sender_id, -amount); new_recipient_balance = update_balance(recipient_id, amount); await ctx.send(f'✅ {ctx.author.mention} đã chuyển **{amount}** 🪙 cho {recipient.mention}!')
+    except Exception as e: await ctx.send(f'Đã xảy ra lỗi trong quá trình chuyển: {e}')
 
 # --- LỆNH ADMIN ---
-# (Tất cả các lệnh admin_give, admin_set, admin_createcode, admin_deletecode giữ nguyên)
+# (Tất cả giữ nguyên: admin_give, admin_set, admin_createcode, admin_deletecode)
 @bot.command(name='admin_give')
 @commands.has_role(ADMIN_ROLE)
 async def admin_give(ctx, member: discord.Member, amount: int):
     if amount == 0: await ctx.send("Số lượng phải khác 0."); return
-    user_id = member.id
-    new_balance = update_balance(user_id, amount)
-    if amount > 0:
-        await ctx.send(f"✅ Đã cộng **{amount}** 🪙 cho {member.mention}. Số dư mới: **{new_balance}** 🪙.")
-    else:
-        await ctx.send(f"✅ Đã trừ **{abs(amount)}** 🪙 từ {member.mention}. Số dư mới: **{new_balance}** 🪙.")
-
+    user_id = member.id; new_balance = update_balance(user_id, amount)
+    if amount > 0: await ctx.send(f"✅ Đã cộng **{amount}** 🪙 cho {member.mention}. Số dư mới: **{new_balance}** 🪙.")
+    else: await ctx.send(f"✅ Đã trừ **{abs(amount)}** 🪙 từ {member.mention}. Số dư mới: **{new_balance}** 🪙.")
 @bot.command(name='admin_set')
 @commands.has_role(ADMIN_ROLE)
 async def admin_set(ctx, member: discord.Member, amount: int):
     if amount < 0: await ctx.send("Không thể set số dư âm."); return
-    try:
-        supabase.rpc('set_balance', {'user_id_input': member.id, 'amount_input': amount}).execute()
-        await ctx.send(f"✅ Đã set số dư của {member.mention} thành **{amount}** 🪙.")
-    except Exception as e:
-        await ctx.send(f"Đã xảy ra lỗi khi set balance: {e}")
-
+    try: supabase.rpc('set_balance', {'user_id_input': member.id, 'amount_input': amount}).execute(); await ctx.send(f"✅ Đã set số dư của {member.mention} thành **{amount}** 🪙.")
+    except Exception as e: await ctx.send(f"Đã xảy ra lỗi khi set balance: {e}")
 @bot.command(name='admin_createcode')
 @commands.has_role(ADMIN_ROLE)
 async def admin_createcode(ctx, code: str, reward: int):
     if reward <= 0: await ctx.send("Phần thưởng phải lớn hơn 0."); return
     code = code.upper()
-    try:
-        supabase.table('gift_codes').insert({'code': code, 'reward': reward}).execute()
-        await ctx.send(f"✅ Đã tạo giftcode `{code}` trị giá **{reward}** 🪙.")
-    except Exception as e:
-        await ctx.send(f"Lỗi! Code `{code}` có thể đã tồn tại. ({e})")
-
+    try: supabase.table('gift_codes').insert({'code': code, 'reward': reward}).execute(); await ctx.send(f"✅ Đã tạo giftcode `{code}` trị giá **{reward}** 🪙.")
+    except Exception as e: await ctx.send(f"Lỗi! Code `{code}` có thể đã tồn tại. ({e})")
 @bot.command(name='admin_deletecode')
 @commands.has_role(ADMIN_ROLE)
 async def admin_deletecode(ctx, code: str):
     code = code.upper()
     try:
         response = supabase.table('gift_codes').delete().eq('code', code).execute()
-        if response.data: 
-            await ctx.send(f"✅ Đã xóa thành công giftcode `{code}`.")
-        else:
-            await ctx.send(f"Lỗi! Không tìm thấy giftcode nào tên là `{code}`.")
-    except Exception as e:
-        await ctx.send(f"Đã xảy ra lỗi khi xóa code: {e}")
+        if response.data: await ctx.send(f"✅ Đã xóa thành công giftcode `{code}`.")
+        else: await ctx.send(f"Lỗi! Không tìm thấy giftcode nào tên là `{code}`.")
+    except Exception as e: await ctx.send(f"Đã xảy ra lỗi khi xóa code: {e}")
 
 # --- GAME 24/7: TÀI XỈU (UI) ---
-# (Toàn bộ logic của game Tài Xỉu 24/7: BetModal, TaiXiuGameView, tai_xiu_game_loop, start/stop_taixiu giữ nguyên)
-
+# (Tất cả logic game Tài Xỉu 24/7 giữ nguyên)
 class BetModal(ui.Modal, title="Đặt cược"):
     def __init__(self, bet_type: str):
-        super().__init__()
-        self.bet_type = bet_type
+        super().__init__(); self.bet_type = bet_type
         self.amount_input = ui.TextInput(label=f"Nhập số tiền cược cho [ {bet_type.upper()} ]", placeholder="Ví dụ: 1000", style=discord.TextStyle.short)
         self.add_item(self.amount_input)
     async def on_submit(self, interaction: discord.Interaction):
@@ -401,11 +243,9 @@ class BetModal(ui.Modal, title="Đặt cược"):
         except ValueError: await interaction.response.send_message("Số tiền cược phải là một con số!", ephemeral=True); return
         if amount <= 0: await interaction.response.send_message("Số tiền cược phải lớn hơn 0!", ephemeral=True); return
         user_data = get_user_data(user_id)
-        if user_data['balance'] < amount:
-            await interaction.response.send_message(f"Bạn không đủ tiền! Bạn chỉ có {user_data['balance']} 🪙.", ephemeral=True); return
+        if user_data['balance'] < amount: await interaction.response.send_message(f"Bạn không đủ tiền! Bạn chỉ có {user_data['balance']} 🪙.", ephemeral=True); return
         current_bets[user_id] = {'type': self.bet_type, 'amount': amount}
         await interaction.response.send_message(f"✅ Bạn đã cược **{amount}** 🪙 vào cửa **{self.bet_type.upper()}** thành công!", ephemeral=True)
-
 class TaiXiuGameView(ui.View):
     def __init__(self): super().__init__(timeout=None)
     @ui.button(label="Tài", style=discord.ButtonStyle.secondary, emoji="⚫", custom_id="bet_tai")
@@ -416,12 +256,10 @@ class TaiXiuGameView(ui.View):
     async def bet_chan_button(self, interaction: discord.Interaction, button: ui.Button): await interaction.response.send_modal(BetModal(bet_type="chẵn"))
     @ui.button(label="Lẻ", style=discord.ButtonStyle.secondary, emoji="🔵", custom_id="bet_le")
     async def bet_le_button(self, interaction: discord.Interaction, button: ui.Button): await interaction.response.send_modal(BetModal(bet_type="lẻ"))
-
 def get_bet_totals():
     totals = {'tài': 0, 'xỉu': 0, 'chẵn': 0, 'lẻ': 0}
     for user_id, bet in current_bets.items(): totals[bet['type']] += bet['amount']
     return totals
-
 @tasks.loop(seconds=60.0)
 async def tai_xiu_game_loop():
     global game_message, current_bets
@@ -437,7 +275,7 @@ async def tai_xiu_game_loop():
     embed.set_footer(text="Nhấn nút bên dưới để đặt cược!")
     if game_message: 
         try: await game_message.delete()
-        except discord.NotFound: pass # Bỏ qua nếu tin nhắn đã bị xóa
+        except discord.NotFound: pass
     game_message = await channel.send(embed=embed, view=TaiXiuGameView())
     for i in range(4):
         await asyncio.sleep(10)
@@ -475,28 +313,23 @@ async def tai_xiu_game_loop():
     embed_result.add_field(name="Người thắng", value="\n".join(payout_log[:15]) if payout_log else "Không có ai thắng ván này.", inline=False)
     embed_result.set_footer(text="Phiên mới sẽ bắt đầu sau 5 giây...")
     await game_message.edit(embed=embed_result, view=None); await asyncio.sleep(5)
-
 @tai_xiu_game_loop.before_loop
 async def before_taixiu_loop(): await bot.wait_until_ready()
-
 @bot.command(name='start_taixiu')
 @commands.has_role(ADMIN_ROLE)
 async def start_taixiu(ctx):
     global game_channel_id; game_channel_id = ctx.channel.id
-    if not tai_xiu_game_loop.is_running():
-        tai_xiu_game_loop.start(); await ctx.send(f"✅ Đã bắt đầu Game Tài Xỉu 24/7 tại kênh <#{game_channel_id}>.")
+    if not tai_xiu_game_loop.is_running(): tai_xiu_game_loop.start(); await ctx.send(f"✅ Đã bắt đầu Game Tài Xỉu 24/7 tại kênh <#{game_channel_id}>.")
     else: await ctx.send(f"Game đã chạy tại kênh <#{game_channel_id}> rồi.")
-
 @bot.command(name='stop_taixiu')
 @commands.has_role(ADMIN_ROLE)
 async def stop_taixiu(ctx):
     global game_channel_id
-    if tai_xiu_game_loop.is_running():
-        tai_xiu_game_loop.stop(); game_channel_id = None; await ctx.send("✅ Đã dừng Game Tài Xỉu.")
+    if tai_xiu_game_loop.is_running(): tai_xiu_game_loop.stop(); game_channel_id = None; await ctx.send("✅ Đã dừng Game Tài Xỉu.")
     else: await ctx.send("Game chưa chạy.")
 
 
-# --- GAME THEO LỆNH (CÓ HIỆU ỨNG) ---
+# --- GAME THEO LỆNH (CÓ HIỆU ỨNG VÀ KHÓA) ---
 
 @bot.command(name='slots', aliases=['slot'])
 @commands.check(is_user_in_game)
@@ -504,38 +337,53 @@ async def slots(ctx, bet_amount: int):
     user_id, balance = ctx.author.id, get_user_data(ctx.author.id)['balance']
     if bet_amount <= 0: await ctx.send('Số tiền cược phải lớn hơn 0!'); return
     if bet_amount > balance: await ctx.send(f'Bạn không đủ token. Bạn chỉ có {balance} 🪙.'); return
-    final_results = random.choices(SLOT_WHEEL, weights=SLOT_WEIGHTS, k=3)
-    embed = discord.Embed(title="🎰 Máy Xèng 🎰", description="| ❔ | ❔ | ❔ |", color=discord.Color.blue())
-    embed.set_footer(text=f"{ctx.author.display_name} đã cược {bet_amount} 🪙")
-    slot_message = await ctx.send(embed=embed)
-    total_spins = 7; current_display = ['❔'] * 3
-    for i in range(total_spins):
-        if i < 3: current_display[0] = random.choice(SLOT_WHEEL)
-        else: current_display[0] = final_results[0]
-        if i < 5: current_display[1] = random.choice(SLOT_WHEEL)
-        else: current_display[1] = final_results[1]
-        if i < 7: current_display[2] = random.choice(SLOT_WHEEL)
-        else: current_display[2] = final_results[2]
-        slot_str = f"| {current_display[0]} | {current_display[1]} | {current_display[2]} |"
-        embed.description = slot_str
+
+    bot.users_in_animation.add(user_id) # KHÓA NGƯỜI DÙNG
+    try:
+        final_results = random.choices(SLOT_WHEEL, weights=SLOT_WEIGHTS, k=3)
+        embed = discord.Embed(title="🎰 Máy Xèng 🎰", description="| - | - | - |", color=discord.Color.blue())
+        embed.set_footer(text=f"{ctx.author.display_name} đã cược {bet_amount} 🪙")
+        slot_message = await ctx.send(embed=embed)
+        
+        # Tiết lộ Cột 1
+        await asyncio.sleep(1.66)
+        embed.description = f"| {final_results[0]} | - | - |"
         try: await slot_message.edit(embed=embed)
-        except discord.NotFound: return
-        await asyncio.sleep(1.0 if i == total_spins - 1 else 0.5)
-    winnings = 0
-    if final_results[0] == final_results[1] == final_results[2]:
-        payout = SLOT_PAYOUTS[final_results[0]]; winnings = bet_amount * payout
-        embed.description += f"\n\n**JACKPOT!** Bạn trúng 3x {final_results[0]} (1 ăn {payout})!"
-    elif final_results[0] == final_results[1] or final_results[1] == final_results[2]:
-        matching_symbol = final_results[1]; winnings = bet_amount * 1
-        embed.description += f"\n\nBạn trúng 2x {matching_symbol} (1 ăn 1)!"
-    if winnings > 0:
-        new_balance = update_balance(user_id, winnings)
-        embed.description += f"\n🎉 Bạn thắng **{winnings}** 🪙!\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.green()
-    else:
-        new_balance = update_balance(user_id, -bet_amount)
-        embed.description += f"\n\n😢 Chúc may mắn lần sau.\nBạn mất **{bet_amount}** 🪙.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.red()
-    try: await slot_message.edit(embed=embed)
-    except discord.NotFound: await ctx.send(embed=embed)
+        except discord.NotFound: raise
+        
+        # Tiết lộ Cột 2
+        await asyncio.sleep(1.66)
+        embed.description = f"| {final_results[0]} | {final_results[1]} | - |"
+        try: await slot_message.edit(embed=embed)
+        except discord.NotFound: raise
+        
+        # Tiết lộ Cột 3
+        await asyncio.sleep(1.66)
+        embed.description = f"| {final_results[0]} | {final_results[1]} | {final_results[2]} |"
+        try: await slot_message.edit(embed=embed)
+        except discord.NotFound: raise
+
+        winnings = 0
+        if final_results[0] == final_results[1] == final_results[2]:
+            payout = SLOT_PAYOUTS[final_results[0]]; winnings = bet_amount * payout
+            embed.description += f"\n\n**JACKPOT!** Bạn trúng 3x {final_results[0]} (1 ăn {payout})!"
+        elif final_results[0] == final_results[1] or final_results[1] == final_results[2]:
+            matching_symbol = final_results[1]; winnings = bet_amount * 1
+            embed.description += f"\n\nBạn trúng 2x {matching_symbol} (1 ăn 1)!"
+        
+        if winnings > 0:
+            new_balance = update_balance(user_id, winnings)
+            embed.description += f"\n🎉 Bạn thắng **{winnings}** 🪙!\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.green()
+        else:
+            new_balance = update_balance(user_id, -bet_amount)
+            embed.description += f"\n\n😢 Chúc may mắn lần sau.\nBạn mất **{bet_amount}** 🪙.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.red()
+        
+        try: await slot_message.edit(embed=embed)
+        except discord.NotFound: await ctx.send(embed=embed)
+
+    except Exception as e: print(f"Lỗi !slots: {e}")
+    finally:
+        bot.users_in_animation.discard(user_id) # MỞ KHÓA NGƯỜI DÙNG
 
 @bot.command(name='hilo', aliases=['caothap'])
 @commands.check(is_user_in_game)
@@ -545,26 +393,32 @@ async def hilo(ctx, bet_amount: int, choice: str):
     if choice not in ['cao', 'thấp', 'high', 'low']: await ctx.send('Cú pháp sai! Phải cược `cao` hoặc `thấp`.'); return
     if bet_amount <= 0: await ctx.send('Số tiền cược phải lớn hơn 0!'); return
     if bet_amount > balance: await ctx.send(f'Bạn không đủ token. Bạn chỉ có {balance} 🪙.'); return
-    rank1, suit1 = random.choice(list(CARD_RANKS.items())); val1 = CARD_RANKS[rank1]; card1_str = f"**{rank1}{suit1}** (Giá trị: {val1})"
-    embed = discord.Embed(title="⬆️ Cao hay Thấp ⬇️", color=discord.Color.blue())
-    embed.add_field(name="Lá bài đầu tiên", value=card1_str, inline=False)
-    embed.add_field(name="Bạn cược", value=f"**{bet_amount}** 🪙 vào **{choice.upper()}**", inline=False)
-    embed.add_field(name="Lá bài tiếp theo", value="Đang rút bài...", inline=False)
-    msg = await ctx.send(embed=embed); await asyncio.sleep(3)
-    rank2, suit2 = random.choice(list(CARD_RANKS.items())); val2 = CARD_RANKS[rank2]; card2_str = f"**{rank2}{suit2}** (Giá trị: {val2})"
-    embed.set_field_at(2, name="Lá bài tiếp theo", value=card2_str, inline=False)
-    is_win = False
-    if val2 > val1 and choice in ['cao', 'high']: is_win = True
-    elif val2 < val1 and choice in ['thấp', 'low']: is_win = True
-    elif val1 == val2: embed.add_field(name="Kết quả", value="Bằng nhau! Nhà cái thắng.", inline=False)
-    if val1 != val2: embed.add_field(name="Kết quả", value=f"{val2} **{'LỚN HƠN' if val2 > val1 else 'NHỎ HƠN'}** {val1}", inline=False)
-    if is_win:
-        winnings = bet_amount; new_balance = update_balance(user_id, winnings)
-        embed.description = f"🎉 **Bạn đã thắng!**\nBạn nhận được **{winnings}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.green()
-    else:
-        new_balance = update_balance(user_id, -bet_amount)
-        embed.description = f"😢 **Bạn đã thua!**\nBạn mất **{bet_amount}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.red()
-    await msg.edit(embed=embed)
+
+    bot.users_in_animation.add(user_id) # KHÓA
+    try:
+        rank1, suit1 = random.choice(list(CARD_RANKS.items())); val1 = CARD_RANKS[rank1]; card1_str = f"**{rank1}{suit1}** (Giá trị: {val1})"
+        embed = discord.Embed(title="⬆️ Cao hay Thấp ⬇️", color=discord.Color.blue())
+        embed.add_field(name="Lá bài đầu tiên", value=card1_str, inline=False)
+        embed.add_field(name="Bạn cược", value=f"**{bet_amount}** 🪙 vào **{choice.upper()}**", inline=False)
+        embed.add_field(name="Lá bài tiếp theo", value="Đang rút bài...", inline=False)
+        msg = await ctx.send(embed=embed); await asyncio.sleep(3)
+        rank2, suit2 = random.choice(list(CARD_RANKS.items())); val2 = CARD_RANKS[rank2]; card2_str = f"**{rank2}{suit2}** (Giá trị: {val2})"
+        embed.set_field_at(2, name="Lá bài tiếp theo", value=card2_str, inline=False)
+        is_win = False
+        if val2 > val1 and choice in ['cao', 'high']: is_win = True
+        elif val2 < val1 and choice in ['thấp', 'low']: is_win = True
+        elif val1 == val2: embed.add_field(name="Kết quả", value="Bằng nhau! Nhà cái thắng.", inline=False)
+        if val1 != val2: embed.add_field(name="Kết quả", value=f"{val2} **{'LỚN HƠN' if val2 > val1 else 'NHỎ HƠN'}** {val1}", inline=False)
+        if is_win:
+            winnings = bet_amount; new_balance = update_balance(user_id, winnings)
+            embed.description = f"🎉 **Bạn đã thắng!**\nBạn nhận được **{winnings}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.green()
+        else:
+            new_balance = update_balance(user_id, -bet_amount)
+            embed.description = f"😢 **Bạn đã thua!**\nBạn mất **{bet_amount}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.red()
+        await msg.edit(embed=embed)
+    except Exception as e: print(f"Lỗi !hilo: {e}")
+    finally:
+        bot.users_in_animation.discard(user_id) # MỞ KHÓA
 
 @bot.command(name='tungxu', aliases=['coinflip'])
 @commands.check(is_user_in_game)
@@ -574,15 +428,21 @@ async def coinflip(ctx, bet_amount: int, choice: str):
     if choice not in ['sấp', 'ngửa', 'sap', 'ngua']: await ctx.send('Cú pháp sai! Phải cược `sấp` hoặc `ngửa`.'); return
     if bet_amount <= 0: await ctx.send('Số tiền cược phải lớn hơn 0!'); return
     if bet_amount > balance: await ctx.send(f'Bạn không đủ token. Bạn chỉ có {balance} 🪙.'); return
-    embed = discord.Embed(title="🪙 Đang tung đồng xu...", description="Đồng xu đang xoay trên không...", color=discord.Color.blue())
-    msg = await ctx.send(embed=embed); await asyncio.sleep(2.5)
-    result = random.choice(['sấp', 'ngửa'])
-    embed.title = f"Tung đồng xu 🪙... Kết quả là **{result.upper()}**!"
-    if (choice == result) or (choice == 'sap' and result == 'sấp') or (choice == 'ngua' and result == 'ngửa'):
-        new_balance = update_balance(user_id, bet_amount); embed.description = f"🎉 Bạn đoán đúng! Bạn thắng **{bet_amount}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.green()
-    else:
-        new_balance = update_balance(user_id, -bet_amount); embed.description = f"😢 Bạn đoán sai! Bạn mất **{bet_amount}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.red()
-    await msg.edit(embed=embed)
+
+    bot.users_in_animation.add(user_id) # KHÓA
+    try:
+        embed = discord.Embed(title="🪙 Đang tung đồng xu...", description="Đồng xu đang xoay trên không...", color=discord.Color.blue())
+        msg = await ctx.send(embed=embed); await asyncio.sleep(2.5)
+        result = random.choice(['sấp', 'ngửa'])
+        embed.title = f"Tung đồng xu 🪙... Kết quả là **{result.upper()}**!"
+        if (choice == result) or (choice == 'sap' and result == 'sấp') or (choice == 'ngua' and result == 'ngửa'):
+            new_balance = update_balance(user_id, bet_amount); embed.description = f"🎉 Bạn đoán đúng! Bạn thắng **{bet_amount}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.green()
+        else:
+            new_balance = update_balance(user_id, -bet_amount); embed.description = f"😢 Bạn đoán sai! Bạn mất **{bet_amount}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.red()
+        await msg.edit(embed=embed)
+    except Exception as e: print(f"Lỗi !tungxu: {e}")
+    finally:
+        bot.users_in_animation.discard(user_id) # MỞ KHÓA
 
 @bot.command(name='xucxac', aliases=['dice'])
 @commands.check(is_user_in_game)
@@ -591,17 +451,23 @@ async def dice_roll(ctx, bet_amount: int, guess: int):
     if not 1 <= guess <= 6: await ctx.send('Cú pháp sai! Phải đoán một số từ `1` đến `6`.'); return
     if bet_amount <= 0: await ctx.send('Số tiền cược phải lớn hơn 0!'); return
     if bet_amount > balance: await ctx.send(f'Bạn không đủ token. Bạn chỉ có {balance} 🪙.'); return
-    embed = discord.Embed(title="🎲 Đang gieo xúc xắc...", description="Xúc xắc đang lăn...", color=discord.Color.dark_purple())
-    msg = await ctx.send(embed=embed); await asyncio.sleep(2.5)
-    result = random.randint(1, 6)
-    embed.title = f"Gieo xúc xắc 🎲... Kết quả là **{result}**!"
-    if guess == result:
-        winnings = bet_amount * 5; new_balance = update_balance(user_id, winnings)
-        embed.description = f"🎉 Chính xác! Bạn thắng **{winnings}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.green()
-    else:
-        new_balance = update_balance(user_id, -bet_amount)
-        embed.description = f"😢 Bạn đoán sai! Bạn mất **{bet_amount}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.red()
-    await msg.edit(embed=embed)
+    
+    bot.users_in_animation.add(user_id) # KHÓA
+    try:
+        embed = discord.Embed(title="🎲 Đang gieo xúc xắc...", description="Xúc xắc đang lăn...", color=discord.Color.dark_purple())
+        msg = await ctx.send(embed=embed); await asyncio.sleep(2.5)
+        result = random.randint(1, 6)
+        embed.title = f"Gieo xúc xắc 🎲... Kết quả là **{result}**!"
+        if guess == result:
+            winnings = bet_amount * 5; new_balance = update_balance(user_id, winnings)
+            embed.description = f"🎉 Chính xác! Bạn thắng **{winnings}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.green()
+        else:
+            new_balance = update_balance(user_id, -bet_amount)
+            embed.description = f"😢 Bạn đoán sai! Bạn mất **{bet_amount}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.red()
+        await msg.edit(embed=embed)
+    except Exception as e: print(f"Lỗi !xucxac: {e}")
+    finally:
+        bot.users_in_animation.discard(user_id) # MỞ KHÓA
 
 @bot.command(name='baucua', aliases=['bc'])
 @commands.check(is_user_in_game)
@@ -612,30 +478,36 @@ async def bau_cua(ctx, bet_amount: int, choice: str):
     if not user_choice_full: await ctx.send('Cú pháp sai! Phải cược vào `bầu`, `cua`, `tôm`, `cá`, `gà`, hoặc `nai`.'); return
     if bet_amount <= 0: await ctx.send('Số tiền cược phải lớn hơn 0!'); return
     if bet_amount > balance: await ctx.send(f'Bạn không đủ token. Bạn chỉ có {balance} 🪙.'); return
-    final_results = random.choices(BAU_CUA_LIST, k=3)
-    embed = discord.Embed(title="🦀 Đang lắc Bầu Cua...", description="| ❔ | ❔ | ❔ |", color=discord.Color.dark_orange())
-    embed.set_footer(text=f"{ctx.author.display_name} cược {bet_amount} 🪙 vào {user_choice_full}")
-    msg = await ctx.send(embed=embed)
-    current_display = ['❔'] * 3
-    for i in range(5):
-        if i < 2: current_display[0] = random.choice(BAU_CUA_LIST)
-        else: current_display[0] = final_results[0]
-        if i < 3: current_display[1] = random.choice(BAU_CUA_LIST)
-        else: current_display[1] = final_results[1]
-        if i < 4: current_display[2] = random.choice(BAU_CUA_LIST)
-        else: current_display[2] = final_results[2]
-        embed.description = f"| **{current_display[0]}** | **{current_display[1]}** | **{current_display[2]}** |"
-        try: await msg.edit(embed=embed)
-        except discord.NotFound: return
-        await asyncio.sleep(0.7)
-    hits = final_results.count(user_choice_full); embed.title = "🦀 Lắc Bầu Cua 🎲"
-    if hits > 0:
-        winnings = bet_amount * hits; new_balance = update_balance(user_id, winnings)
-        embed.description += f"\n\n🎉 **Bạn đã thắng!** Trúng {hits} lần.\nBạn nhận được **{winnings}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.green()
-    else:
-        new_balance = update_balance(user_id, -bet_amount)
-        embed.description += f"\n\n😢 **Bạn đã thua!** Bạn mất **{bet_amount}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.red()
-    await msg.edit(embed=embed)
+
+    bot.users_in_animation.add(user_id) # KHÓA
+    try:
+        final_results = random.choices(BAU_CUA_LIST, k=3)
+        embed = discord.Embed(title="🦀 Đang lắc Bầu Cua...", description="| ❔ | ❔ | ❔ |", color=discord.Color.dark_orange())
+        embed.set_footer(text=f"{ctx.author.display_name} cược {bet_amount} 🪙 vào {user_choice_full}")
+        msg = await ctx.send(embed=embed)
+        current_display = ['❔'] * 3
+        for i in range(5):
+            if i < 2: current_display[0] = random.choice(BAU_CUA_LIST)
+            else: current_display[0] = final_results[0]
+            if i < 3: current_display[1] = random.choice(BAU_CUA_LIST)
+            else: current_display[1] = final_results[1]
+            if i < 4: current_display[2] = random.choice(BAU_CUA_LIST)
+            else: current_display[2] = final_results[2]
+            embed.description = f"| **{current_display[0]}** | **{current_display[1]}** | **{current_display[2]}** |"
+            try: await msg.edit(embed=embed)
+            except discord.NotFound: raise
+            await asyncio.sleep(0.7)
+        hits = final_results.count(user_choice_full); embed.title = "🦀 Lắc Bầu Cua 🎲"
+        if hits > 0:
+            winnings = bet_amount * hits; new_balance = update_balance(user_id, winnings)
+            embed.description += f"\n\n🎉 **Bạn đã thắng!** Trúng {hits} lần.\nBạn nhận được **{winnings}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.green()
+        else:
+            new_balance = update_balance(user_id, -bet_amount)
+            embed.description += f"\n\n😢 **Bạn đã thua!** Bạn mất **{bet_amount}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.red()
+        await msg.edit(embed=embed)
+    except Exception as e: print(f"Lỗi !baucua: {e}")
+    finally:
+        bot.users_in_animation.discard(user_id) # MỞ KHÓA
 
 @bot.command(name='duangua', aliases=['race'])
 @commands.check(is_user_in_game)
@@ -644,39 +516,45 @@ async def dua_ngua(ctx, bet_amount: int, horse_number: int):
     if not 1 <= horse_number <= NUM_HORSES: await ctx.send(f'Cú pháp sai! Phải cược vào ngựa số `1` đến `{NUM_HORSES}`.'); return
     if bet_amount <= 0: await ctx.send('Số tiền cược phải lớn hơn 0!'); return
     if bet_amount > balance: await ctx.send(f'Bạn không đủ token. Bạn chỉ có {balance} 🪙.'); return
-    positions = [0] * NUM_HORSES
-    def get_race_track(positions):
-        track = ""
-        for i in range(NUM_HORSES):
-            pos_clamped = min(positions[i], RACE_LENGTH) 
-            track += f"🐎 {i+1}: {'-' * (pos_clamped - 1)}{'🏆' if pos_clamped == RACE_LENGTH else '🏁'}\n"
-        return track
-    embed = discord.Embed(title="🐎 Cuộc Đua Bắt Đầu! 🐎", description=get_race_track(positions), color=discord.Color.blue())
-    embed.set_footer(text=f"{ctx.author.display_name} cược {bet_amount} 🪙 vào ngựa số {horse_number}.")
-    race_msg = await ctx.send(embed=embed)
-    winner = None
-    while winner is None:
-        await asyncio.sleep(2)
-        for i in range(NUM_HORSES):
-            if winner is None:
-                positions[i] += random.randint(1, 3)
-                if positions[i] >= RACE_LENGTH:
-                    positions[i] = RACE_LENGTH; winner = i + 1 
-        embed.description = get_race_track(positions)
+
+    bot.users_in_animation.add(user_id) # KHÓA
+    try:
+        positions = [0] * NUM_HORSES
+        def get_race_track(positions):
+            track = ""
+            for i in range(NUM_HORSES):
+                pos_clamped = min(positions[i], RACE_LENGTH) 
+                track += f"🐎 {i+1}: {'-' * (pos_clamped - 1)}{'🏆' if pos_clamped == RACE_LENGTH else '🏁'}\n"
+            return track
+        embed = discord.Embed(title="🐎 Cuộc Đua Bắt Đầu! 🐎", description=get_race_track(positions), color=discord.Color.blue())
+        embed.set_footer(text=f"{ctx.author.display_name} cược {bet_amount} 🪙 vào ngựa số {horse_number}.")
+        race_msg = await ctx.send(embed=embed)
+        winner = None
+        while winner is None:
+            await asyncio.sleep(2)
+            for i in range(NUM_HORSES):
+                if winner is None:
+                    positions[i] += random.randint(1, 3)
+                    if positions[i] >= RACE_LENGTH:
+                        positions[i] = RACE_LENGTH; winner = i + 1 
+            embed.description = get_race_track(positions)
+            try: await race_msg.edit(embed=embed)
+            except discord.NotFound: raise
+            if winner: break
+        is_win = (winner == horse_number)
+        result_title = f"🐎 Ngựa số {winner} đã chiến thắng! 🏆"; result_description = get_race_track(positions)
+        if is_win:
+            winnings = bet_amount * 4; new_balance = update_balance(user_id, winnings)
+            result_description += f"\n\n🎉 **Bạn đã thắng!** Ngựa số {horse_number} đã về nhất!\nBạn nhận được **{winnings}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.green()
+        else:
+            new_balance = update_balance(user_id, -bet_amount)
+            result_description += f"\n\n😢 **Bạn đã thua!** Ngựa của bạn (số {horse_number}) đã không thắng.\nBạn mất **{bet_amount}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.red()
+        embed.title = result_title; embed.description = result_description
         try: await race_msg.edit(embed=embed)
-        except discord.NotFound: return
-        if winner: break
-    is_win = (winner == horse_number)
-    result_title = f"🐎 Ngựa số {winner} đã chiến thắng! 🏆"; result_description = get_race_track(positions)
-    if is_win:
-        winnings = bet_amount * 4; new_balance = update_balance(user_id, winnings)
-        result_description += f"\n\n🎉 **Bạn đã thắng!** Ngựa số {horse_number} đã về nhất!\nBạn nhận được **{winnings}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.green()
-    else:
-        new_balance = update_balance(user_id, -bet_amount)
-        result_description += f"\n\n😢 **Bạn đã thua!** Ngựa của bạn (số {horse_number}) đã không thắng.\nBạn mất **{bet_amount}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.red()
-    embed.title = result_title; embed.description = result_description
-    try: await race_msg.edit(embed=embed)
-    except discord.NotFound: await ctx.send(embed=embed)
+        except discord.NotFound: await ctx.send(embed=embed)
+    except Exception as e: print(f"Lỗi !duangua: {e}")
+    finally:
+        bot.users_in_animation.discard(user_id) # MỞ KHÓA
 
 @bot.command(name='quay', aliases=['roulette'])
 @commands.check(is_user_in_game)
@@ -685,51 +563,59 @@ async def roulette(ctx, bet_amount: int, bet_type: str):
     bet_type = bet_type.lower().strip()
     if bet_amount <= 0: await ctx.send('Số tiền cược phải lớn hơn 0!'); return
     if bet_amount > balance: await ctx.send(f'Bạn không đủ token. Bạn chỉ có {balance} 🪙.'); return
-    embed = discord.Embed(title="🎰 Vòng quay Roulette 🎰", description="Bóng đang quay... 🔄", color=discord.Color.dark_red())
-    embed.set_footer(text=f"{ctx.author.display_name} cược {bet_amount} 🪙 vào {bet_type}")
-    msg = await ctx.send(embed=embed)
-    spin_result = random.randint(0, 36)
-    spin_color = 'xanh lá 🟩' if spin_result == 0 else ('đỏ 🟥' if spin_result in RED_NUMBERS else 'đen ⬛')
-    await asyncio.sleep(4)
-    winnings = 0; payout_rate = 0; is_win = False
+
+    bot.users_in_animation.add(user_id) # KHÓA
     try:
-        bet_number = int(bet_type)
-        if 0 <= bet_number <= 36:
-            if spin_result == bet_number: payout_rate = 35; is_win = True
-        else: await ctx.send('Cược số không hợp lệ. Chỉ cược từ `0` đến `36`.'); await msg.delete(); return
-    except ValueError:
-        if bet_type in ['đỏ', 'red']:
-            if spin_result in RED_NUMBERS: payout_rate = 1; is_win = True
-        elif bet_type in ['đen', 'black']:
-            if spin_result in BLACK_NUMBERS: payout_rate = 1; is_win = True
-        elif bet_type in ['lẻ', 'odd']:
-            if spin_result != 0 and spin_result % 2 != 0: payout_rate = 1; is_win = True
-        elif bet_type in ['chẵn', 'even']:
-            if spin_result != 0 and spin_result % 2 == 0: payout_rate = 1; is_win = True
-        elif bet_type in ['nửa1', '1-18']:
-            if 1 <= spin_result <= 18: payout_rate = 1; is_win = True
-        elif bet_type in ['nửa2', '19-36']:
-            if 19 <= spin_result <= 36: payout_rate = 1; is_win = True
-        elif bet_type in ['tá1', '1-12']:
-            if 1 <= spin_result <= 12: payout_rate = 2; is_win = True
-        elif bet_type in ['tá2', '13-24']:
-            if 13 <= spin_result <= 24: payout_rate = 2; is_win = True
-        elif bet_type in ['tá3', '25-36']:
-            if 25 <= spin_result <= 36: payout_rate = 2; is_win = True
-        else: await ctx.send('Loại cược không hợp lệ. Gõ `!help` để xem các loại cược.'); await msg.delete(); return
-    result_message = f"**Bóng dừng tại số: {spin_result} ({spin_color})**\n\n{ctx.author.mention} đã cược **{bet_amount}** 🪙 vào **{bet_type}**.\n"
-    if is_win:
-        winnings = bet_amount * payout_rate; new_balance = update_balance(user_id, winnings)
-        result_message += f"🎉 **Bạn đã thắng!** (1 ăn {payout_rate})\nBạn nhận được **{winnings}** token.\n"; embed.color = discord.Color.green()
-    else:
-        new_balance = update_balance(user_id, -bet_amount)
-        result_message += f"😢 **Bạn đã thua!**\nBạn mất **{bet_amount}** token.\n"; embed.color = discord.Color.red()
-    result_message += f"Số dư mới: **{new_balance}** 🪙."
-    embed.description = result_message
-    await msg.edit(embed=embed)
+        embed = discord.Embed(title="🎰 Vòng quay Roulette 🎰", description="Bóng đang quay... 🔄", color=discord.Color.dark_red())
+        embed.set_footer(text=f"{ctx.author.display_name} cược {bet_amount} 🪙 vào {bet_type}")
+        msg = await ctx.send(embed=embed)
+        spin_result = random.randint(0, 36)
+        spin_color = 'xanh lá 🟩' if spin_result == 0 else ('đỏ 🟥' if spin_result in RED_NUMBERS else 'đen ⬛')
+        await asyncio.sleep(4)
+        winnings = 0; payout_rate = 0; is_win = False
+        try:
+            bet_number = int(bet_type)
+            if 0 <= bet_number <= 36:
+                if spin_result == bet_number: payout_rate = 35; is_win = True
+            else: await ctx.send('Cược số không hợp lệ. Chỉ cược từ `0` đến `36`.'); await msg.delete(); raise Exception("Invalid Bet")
+        except ValueError:
+            if bet_type in ['đỏ', 'red']:
+                if spin_result in RED_NUMBERS: payout_rate = 1; is_win = True
+            elif bet_type in ['đen', 'black']:
+                if spin_result in BLACK_NUMBERS: payout_rate = 1; is_win = True
+            elif bet_type in ['lẻ', 'odd']:
+                if spin_result != 0 and spin_result % 2 != 0: payout_rate = 1; is_win = True
+            elif bet_type in ['chẵn', 'even']:
+                if spin_result != 0 and spin_result % 2 == 0: payout_rate = 1; is_win = True
+            elif bet_type in ['nửa1', '1-18']:
+                if 1 <= spin_result <= 18: payout_rate = 1; is_win = True
+            elif bet_type in ['nửa2', '19-36']:
+                if 19 <= spin_result <= 36: payout_rate = 1; is_win = True
+            elif bet_type in ['tá1', '1-12']:
+                if 1 <= spin_result <= 12: payout_rate = 2; is_win = True
+            elif bet_type in ['tá2', '13-24']:
+                if 13 <= spin_result <= 24: payout_rate = 2; is_win = True
+            elif bet_type in ['tá3', '25-36']:
+                if 25 <= spin_result <= 36: payout_rate = 2; is_win = True
+            else: await ctx.send('Loại cược không hợp lệ. Gõ `!help` để xem các loại cược.'); await msg.delete(); raise Exception("Invalid Bet")
+        
+        result_message = f"**Bóng dừng tại số: {spin_result} ({spin_color})**\n\n{ctx.author.mention} đã cược **{bet_amount}** 🪙 vào **{bet_type}**.\n"
+        if is_win:
+            winnings = bet_amount * payout_rate; new_balance = update_balance(user_id, winnings)
+            result_message += f"🎉 **Bạn đã thắng!** (1 ăn {payout_rate})\nBạn nhận được **{winnings}** token.\n"; embed.color = discord.Color.green()
+        else:
+            new_balance = update_balance(user_id, -bet_amount)
+            result_message += f"😢 **Bạn đã thua!**\nBạn mất **{bet_amount}** token.\n"; embed.color = discord.Color.red()
+        result_message += f"Số dư mới: **{new_balance}** 🪙."
+        embed.description = result_message
+        await msg.edit(embed=embed)
+    except Exception as e: print(f"Lỗi !quay (bỏ qua): {e}")
+    finally:
+        bot.users_in_animation.discard(user_id) # MỞ KHÓA
 
 
 # --- GAME GIAO DIỆN UI (BLACKJACK & MINES) ---
+# (Toàn bộ logic của Blackjack và Mines giữ nguyên)
 
 # --- BLACKJACK (XÌ DÁCH) ---
 def create_deck():
@@ -739,15 +625,12 @@ def create_deck():
             if rank == 'A': deck.append({'rank': rank, 'suit': suit, 'value': 11})
             else: deck.append({'rank': rank, 'suit': suit, 'value': CARD_RANKS[rank] if CARD_RANKS[rank] < 11 else 10})
     random.shuffle(deck); return deck
-
 def calculate_score(hand):
     score = sum(card['value'] for card in hand)
     aces = sum(1 for card in hand if card['rank'] == 'A')
     while score > 21 and aces: score -= 10; aces -= 1
     return score
-
 def hand_to_string(hand): return " | ".join(f"**{c['rank']}{c['suit']}**" for c in hand)
-
 class BlackjackView(ui.View):
     def __init__(self, author_id, game):
         super().__init__(timeout=300.0); self.author_id = author_id; self.game = game
@@ -798,7 +681,6 @@ class BlackjackView(ui.View):
         embed.set_footer(text=f"ĐÃ GẤP ĐÔI! Cược: {game['bet']} 🪙")
         if player_score > 21: await self.end_game(interaction, "Bạn bị Quắc!", -game['bet'])
         else: await self.stand(interaction, button)
-
 @bot.command(name='blackjack', aliases=['bj'])
 @commands.check(is_user_in_game)
 async def blackjack(ctx, bet_amount: int):
@@ -821,7 +703,6 @@ async def blackjack(ctx, bet_amount: int):
     game_state = {'bet': bet_amount, 'deck': deck, 'player_hand': player_hand, 'dealer_hand': dealer_hand, 'message': message, 'embed': embed}
     bot.blackjack_games[user_id] = game_state; view.game = game_state
 
-
 # --- MINES (DÒ MÌN) ---
 def combinations(n, k):
     if k < 0 or k > n: return 0
@@ -830,7 +711,6 @@ def calculate_mines_payout(gems_revealed, total_bombs):
     numerator = combinations(25, gems_revealed); denominator = combinations(25 - total_bombs, gems_revealed)
     if denominator == 0: return 1.0
     return (numerator / denominator) * 0.95
-
 class MinesButton(ui.Button):
     def __init__(self, x, y):
         super().__init__(style=discord.ButtonStyle.secondary, label="\u200b", row=x); self.x = x; self.y = y
@@ -856,7 +736,6 @@ class MinesButton(ui.Button):
                 embed.color = discord.Color.gold(); self.view.stop_game(show_solution=False)
                 await interaction.response.edit_message(embed=embed, view=self.view); bot.mines_games.pop(interaction.user.id, None)
             else: await interaction.response.edit_message(embed=embed, view=self.view)
-
 class MinesCashoutButton(ui.Button):
     def __init__(self): super().__init__(style=discord.ButtonStyle.primary, label="Rút tiền (1.00x)", row=4)
     async def callback(self, interaction: discord.Interaction):
@@ -869,7 +748,6 @@ class MinesCashoutButton(ui.Button):
         embed.description = f"Bạn rút tiền tại **{game['current_payout']:.2f}x**.\nBạn thắng **{winnings}** 🪙.\nSố dư mới: **{new_balance}** 🪙."
         embed.color = discord.Color.green(); self.view.stop_game(show_solution=True)
         await interaction.response.edit_message(embed=embed, view=self.view); bot.mines_games.pop(interaction.user.id, None)
-
 class MinesView(ui.View):
     def __init__(self, author_id, game):
         super().__init__(timeout=300.0); self.author_id = author_id
@@ -892,7 +770,6 @@ class MinesView(ui.View):
                 elif game['grid'][i] == '💎':
                      item.label = '💎'
                      if item.style != discord.ButtonStyle.success: item.style = discord.ButtonStyle.secondary
-
 @bot.command(name='mines', aliases=['domin'])
 @commands.check(is_user_in_game)
 async def mines(ctx, bet_amount: int, bomb_count: int):
