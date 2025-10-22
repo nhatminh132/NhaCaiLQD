@@ -9,6 +9,7 @@ import typing
 import random
 import asyncio
 import math
+import discord.utils # Import để check role admin
 
 # Import tệp keep_alive
 from keep_alive import keep_alive 
@@ -88,7 +89,7 @@ CARD_RANKS = {
     'J': 11, 'Q': 12, 'K': 13, 'A': 14 # A là 14 trong Hilo, 1 hoặc 11 trong Blackjack
 }
 
-# --- (ĐÃ CẬP NHẬT) CÀI ĐẶT RATE LIMIT TOÀN CỤC ---
+# --- CÀI ĐẶT RATE LIMIT TOÀN CỤC ---
 # 30 lệnh, mỗi 60 giây, áp dụng cho TOÀN BỘ BOT (BucketType.default)
 global_cooldown = commands.CooldownMapping.from_cooldown(30, 60.0, commands.BucketType.default)
 
@@ -131,6 +132,8 @@ def get_jackpot_data():
         return data['pool_amount'], data['history'][-10:] # Lấy 10 kết quả gần nhất
     except Exception as e:
         print(f"Loi khi lay jackpot: {e}")
+        # Nếu chưa có, tạo mới
+        supabase.table('jackpot').insert({'game_name': 'taixiu', 'pool_amount': 0, 'history': []}).execute()
         return 0, []
 
 # --- HÀM KIỂM TRA COOLDOWN TOÀN CỤC ---
@@ -182,7 +185,7 @@ async def on_command_error(ctx, error):
         
     # 4. Lỗi game đang diễn ra (cho game UI)
     if isinstance(error, commands.CheckFailure):
-        await ctx.send(f"{ctx.author.mention}, bạn đang có một ván game khác đang chạy!", ephemeral=True)
+        await ctx.send(f"{ctx.author.mention}, bạn đang có một ván game khác (Blackjack/Dò Mìn) đang chạy!", ephemeral=True)
         return
 
     # 5. Báo lỗi chung
@@ -215,12 +218,13 @@ async def custom_help(ctx):
         inline=False)
     
     embed.add_field(name="🎲 Trò chơi (Gõ lệnh)",
-        value="`!slots <số_tiền>` - Chơi máy xèng.\n"
-              "`!hilo <số_tiền> <cao/thấp>` - Đoán lá bài tiếp theo.\n"
-              "`!tungxu <số_tiền> <sấp/ngửa>` - Cược 50/50.\n"
-              "`!xucxac <số_tiền> <số_đoán>` - Đoán số (1-6), thắng 1 ăn 5.\n"
-              "`!baucua <số_tiền> <linh_vật>` - Cược Bầu Cua Tôm Cá.\n"
-              "`!duangua <số_tiền> <số_ngựa>` - Cược đua ngựa (1-6), thắng 1 ăn 4.",
+        value="`!slots <số_tiền>` - Chơi máy xèng (có hiệu ứng).\n"
+              "`!hilo <số_tiền> <cao/thấp>` - Đoán lá bài tiếp theo (có hiệu ứng).\n"
+              "`!tungxu <số_tiền> <sấp/ngửa>` - Cược 50/50 (có hiệu ứng).\n"
+              "`!xucxac <số_tiền> <số_đoán>` - Đoán số (1-6), thắng 1 ăn 5 (có hiệu ứng).\n"
+              "`!baucua <số_tiền> <linh_vật>` - Cược Bầu Cua Tôm Cá (có hiệu ứng).\n"
+              "`!duangua <số_tiền> <số_ngựa>` - Cược đua ngựa (1-6), thắng 1 ăn 4.\n"
+              "`!quay <số_tiền> <loại_cược>` - Chơi Roulette (có hiệu ứng).",
         inline=False)
         
     embed.add_field(name="🃏 Trò chơi (Giao diện UI)",
@@ -431,7 +435,9 @@ async def tai_xiu_game_loop():
     embed.add_field(name="📈 Soi cầu (gần nhất bên phải)", value=f"`{' | '.join(history)}`" if history else "Chưa có dữ liệu", inline=True)
     embed.add_field(name="Tổng Cược Hiện Tại", value="• Tài: 0 🪙\n• Xỉu: 0 🪙\n• Chẵn: 0 🪙\n• Lẻ: 0 🪙", inline=False)
     embed.set_footer(text="Nhấn nút bên dưới để đặt cược!")
-    if game_message: await game_message.delete()
+    if game_message: 
+        try: await game_message.delete()
+        except discord.NotFound: pass # Bỏ qua nếu tin nhắn đã bị xóa
     game_message = await channel.send(embed=embed, view=TaiXiuGameView())
     for i in range(4):
         await asyncio.sleep(10)
@@ -490,158 +496,151 @@ async def stop_taixiu(ctx):
     else: await ctx.send("Game chưa chạy.")
 
 
-# --- GAME THEO LỆNH (COMMAND-BASED) ---
+# --- GAME THEO LỆNH (CÓ HIỆU ỨNG) ---
 
 @bot.command(name='slots', aliases=['slot'])
-@commands.check(is_user_in_game) # Check xem có đang chơi game UI không
+@commands.check(is_user_in_game)
 async def slots(ctx, bet_amount: int):
-    """Chơi máy xèng."""
-    user_id = ctx.author.id
-    balance = get_user_data(user_id)['balance']
+    user_id, balance = ctx.author.id, get_user_data(ctx.author.id)['balance']
     if bet_amount <= 0: await ctx.send('Số tiền cược phải lớn hơn 0!'); return
     if bet_amount > balance: await ctx.send(f'Bạn không đủ token. Bạn chỉ có {balance} 🪙.'); return
-    
-    # Quay 3 cột
-    results = random.choices(SLOT_WHEEL, weights=SLOT_WEIGHTS, k=3)
-    slot_str = f"| {results[0]} | {results[1]} | {results[2]} |"
-    
-    embed = discord.Embed(title="🎰 Máy Xèng 🎰", description=slot_str, color=discord.Color.dark_orange())
-    
+    final_results = random.choices(SLOT_WHEEL, weights=SLOT_WEIGHTS, k=3)
+    embed = discord.Embed(title="🎰 Máy Xèng 🎰", description="| ❔ | ❔ | ❔ |", color=discord.Color.blue())
+    embed.set_footer(text=f"{ctx.author.display_name} đã cược {bet_amount} 🪙")
+    slot_message = await ctx.send(embed=embed)
+    total_spins = 7; current_display = ['❔'] * 3
+    for i in range(total_spins):
+        if i < 3: current_display[0] = random.choice(SLOT_WHEEL)
+        else: current_display[0] = final_results[0]
+        if i < 5: current_display[1] = random.choice(SLOT_WHEEL)
+        else: current_display[1] = final_results[1]
+        if i < 7: current_display[2] = random.choice(SLOT_WHEEL)
+        else: current_display[2] = final_results[2]
+        slot_str = f"| {current_display[0]} | {current_display[1]} | {current_display[2]} |"
+        embed.description = slot_str
+        try: await slot_message.edit(embed=embed)
+        except discord.NotFound: return
+        await asyncio.sleep(1.0 if i == total_spins - 1 else 0.5)
     winnings = 0
-    if results[0] == results[1] == results[2]:
-        # 3x giống nhau
-        payout = SLOT_PAYOUTS[results[0]]
-        winnings = bet_amount * payout
-        embed.description += f"\n\n**JACKPOT!** Bạn trúng 3x {results[0]} (1 ăn {payout})!"
-    elif results[0] == results[1] or results[1] == results[2]:
-        # 2x giống nhau
-        winnings = bet_amount * 1 # 1 ăn 1
-        embed.description += f"\n\nBạn trúng 2x {results[1]} (1 ăn 1)!"
-
+    if final_results[0] == final_results[1] == final_results[2]:
+        payout = SLOT_PAYOUTS[final_results[0]]; winnings = bet_amount * payout
+        embed.description += f"\n\n**JACKPOT!** Bạn trúng 3x {final_results[0]} (1 ăn {payout})!"
+    elif final_results[0] == final_results[1] or final_results[1] == final_results[2]:
+        matching_symbol = final_results[1]; winnings = bet_amount * 1
+        embed.description += f"\n\nBạn trúng 2x {matching_symbol} (1 ăn 1)!"
     if winnings > 0:
         new_balance = update_balance(user_id, winnings)
-        embed.description += f"\n🎉 Bạn thắng **{winnings}** 🪙!\nSố dư mới: **{new_balance}** 🪙."
-        embed.color = discord.Color.green()
+        embed.description += f"\n🎉 Bạn thắng **{winnings}** 🪙!\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.green()
     else:
         new_balance = update_balance(user_id, -bet_amount)
-        embed.description += f"\n\n😢 Chúc may mắn lần sau.\nBạn mất **{bet_amount}** 🪙.\nSố dư mới: **{new_balance}** 🪙."
-        embed.color = discord.Color.red()
-        
-    await ctx.send(embed=embed)
+        embed.description += f"\n\n😢 Chúc may mắn lần sau.\nBạn mất **{bet_amount}** 🪙.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.red()
+    try: await slot_message.edit(embed=embed)
+    except discord.NotFound: await ctx.send(embed=embed)
 
 @bot.command(name='hilo', aliases=['caothap'])
 @commands.check(is_user_in_game)
 async def hilo(ctx, bet_amount: int, choice: str):
-    """Chơi Cao hay Thấp (Higher or Lower)."""
-    user_id = ctx.author.id
-    balance = get_user_data(user_id)['balance']
+    user_id, balance = ctx.author.id, get_user_data(ctx.author.id)['balance']
     choice = choice.lower().strip()
-    
-    if choice not in ['cao', 'thấp', 'high', 'low']:
-        await ctx.send('Cú pháp sai! Phải cược `cao` hoặc `thấp`.'); return
+    if choice not in ['cao', 'thấp', 'high', 'low']: await ctx.send('Cú pháp sai! Phải cược `cao` hoặc `thấp`.'); return
     if bet_amount <= 0: await ctx.send('Số tiền cược phải lớn hơn 0!'); return
     if bet_amount > balance: await ctx.send(f'Bạn không đủ token. Bạn chỉ có {balance} 🪙.'); return
-
-    # Rút 2 lá bài
-    rank1, suit1 = random.choice(list(CARD_RANKS.items()))
-    rank2, suit2 = random.choice(list(CARD_RANKS.items()))
-    val1, val2 = CARD_RANKS[rank1], CARD_RANKS[rank2]
-    
-    card1_str = f"**{rank1}{suit1}** (Giá trị: {val1})"
-    card2_str = f"**{rank2}{suit2}** (Giá trị: {val2})"
-    
+    rank1, suit1 = random.choice(list(CARD_RANKS.items())); val1 = CARD_RANKS[rank1]; card1_str = f"**{rank1}{suit1}** (Giá trị: {val1})"
     embed = discord.Embed(title="⬆️ Cao hay Thấp ⬇️", color=discord.Color.blue())
     embed.add_field(name="Lá bài đầu tiên", value=card1_str, inline=False)
     embed.add_field(name="Bạn cược", value=f"**{bet_amount}** 🪙 vào **{choice.upper()}**", inline=False)
-    embed.add_field(name="Lá bài tiếp theo", value=card2_str, inline=False)
-
+    embed.add_field(name="Lá bài tiếp theo", value="Đang rút bài...", inline=False)
+    msg = await ctx.send(embed=embed); await asyncio.sleep(3)
+    rank2, suit2 = random.choice(list(CARD_RANKS.items())); val2 = CARD_RANKS[rank2]; card2_str = f"**{rank2}{suit2}** (Giá trị: {val2})"
+    embed.set_field_at(2, name="Lá bài tiếp theo", value=card2_str, inline=False)
     is_win = False
-    if val2 > val1 and choice in ['cao', 'high']:
-        is_win = True
-    elif val2 < val1 and choice in ['thấp', 'low']:
-        is_win = True
-    elif val1 == val2:
-        # Hòa thì thua
-        is_win = False
-        embed.add_field(name="Kết quả", value="Bằng nhau! Nhà cái thắng.", inline=False)
-        
-    if val1 != val2:
-         embed.add_field(name="Kết quả", value=f"{val2} **{'LỚN HƠN' if val2 > val1 else 'NHỎ HƠN'}** {val1}", inline=False)
-
+    if val2 > val1 and choice in ['cao', 'high']: is_win = True
+    elif val2 < val1 and choice in ['thấp', 'low']: is_win = True
+    elif val1 == val2: embed.add_field(name="Kết quả", value="Bằng nhau! Nhà cái thắng.", inline=False)
+    if val1 != val2: embed.add_field(name="Kết quả", value=f"{val2} **{'LỚN HƠN' if val2 > val1 else 'NHỎ HƠN'}** {val1}", inline=False)
     if is_win:
-        winnings = bet_amount # 1 ăn 1
-        new_balance = update_balance(user_id, winnings)
-        embed.description = f"🎉 **Bạn đã thắng!**\nBạn nhận được **{winnings}** token.\nSố dư mới: **{new_balance}** 🪙."
-        embed.color = discord.Color.green()
+        winnings = bet_amount; new_balance = update_balance(user_id, winnings)
+        embed.description = f"🎉 **Bạn đã thắng!**\nBạn nhận được **{winnings}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.green()
     else:
         new_balance = update_balance(user_id, -bet_amount)
-        embed.description = f"😢 **Bạn đã thua!**\nBạn mất **{bet_amount}** token.\nSố dư mới: **{new_balance}** 🪙."
-        embed.color = discord.Color.red()
-
-    await ctx.send(embed=embed)
+        embed.description = f"😢 **Bạn đã thua!**\nBạn mất **{bet_amount}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.red()
+    await msg.edit(embed=embed)
 
 @bot.command(name='tungxu', aliases=['coinflip'])
 @commands.check(is_user_in_game)
 async def coinflip(ctx, bet_amount: int, choice: str):
-    # (Giữ nguyên lệnh !tungxu)
     user_id, balance = ctx.author.id, get_user_data(ctx.author.id)['balance']
     choice = choice.lower().strip()
     if choice not in ['sấp', 'ngửa', 'sap', 'ngua']: await ctx.send('Cú pháp sai! Phải cược `sấp` hoặc `ngửa`.'); return
     if bet_amount <= 0: await ctx.send('Số tiền cược phải lớn hơn 0!'); return
     if bet_amount > balance: await ctx.send(f'Bạn không đủ token. Bạn chỉ có {balance} 🪙.'); return
+    embed = discord.Embed(title="🪙 Đang tung đồng xu...", description="Đồng xu đang xoay trên không...", color=discord.Color.blue())
+    msg = await ctx.send(embed=embed); await asyncio.sleep(2.5)
     result = random.choice(['sấp', 'ngửa'])
-    embed = discord.Embed(title=f"Tung đồng xu 🪙... Kết quả là **{result.upper()}**!")
+    embed.title = f"Tung đồng xu 🪙... Kết quả là **{result.upper()}**!"
     if (choice == result) or (choice == 'sap' and result == 'sấp') or (choice == 'ngua' and result == 'ngửa'):
         new_balance = update_balance(user_id, bet_amount); embed.description = f"🎉 Bạn đoán đúng! Bạn thắng **{bet_amount}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.green()
     else:
         new_balance = update_balance(user_id, -bet_amount); embed.description = f"😢 Bạn đoán sai! Bạn mất **{bet_amount}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.red()
-    await ctx.send(embed=embed)
+    await msg.edit(embed=embed)
 
 @bot.command(name='xucxac', aliases=['dice'])
 @commands.check(is_user_in_game)
 async def dice_roll(ctx, bet_amount: int, guess: int):
-    # (Giữ nguyên lệnh !xucxac)
     user_id, balance = ctx.author.id, get_user_data(ctx.author.id)['balance']
     if not 1 <= guess <= 6: await ctx.send('Cú pháp sai! Phải đoán một số từ `1` đến `6`.'); return
     if bet_amount <= 0: await ctx.send('Số tiền cược phải lớn hơn 0!'); return
     if bet_amount > balance: await ctx.send(f'Bạn không đủ token. Bạn chỉ có {balance} 🪙.'); return
+    embed = discord.Embed(title="🎲 Đang gieo xúc xắc...", description="Xúc xắc đang lăn...", color=discord.Color.dark_purple())
+    msg = await ctx.send(embed=embed); await asyncio.sleep(2.5)
     result = random.randint(1, 6)
-    embed = discord.Embed(title=f"Gieo xúc xắc 🎲... Kết quả là **{result}**!")
+    embed.title = f"Gieo xúc xắc 🎲... Kết quả là **{result}**!"
     if guess == result:
         winnings = bet_amount * 5; new_balance = update_balance(user_id, winnings)
         embed.description = f"🎉 Chính xác! Bạn thắng **{winnings}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.green()
     else:
         new_balance = update_balance(user_id, -bet_amount)
         embed.description = f"😢 Bạn đoán sai! Bạn mất **{bet_amount}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.red()
-    await ctx.send(embed=embed)
+    await msg.edit(embed=embed)
 
 @bot.command(name='baucua', aliases=['bc'])
 @commands.check(is_user_in_game)
 async def bau_cua(ctx, bet_amount: int, choice: str):
-    # (Lệnh !baucua đã được cung cấp ở lượt trước)
-    user_id, balance = ctx.author.id, get_user_data(user_id)['balance']
+    user_id, balance = ctx.author.id, get_user_data(ctx.author.id)['balance']
     choice_clean = choice.lower().strip()
     user_choice_full = BAU_CUA_FACES.get(choice_clean)
     if not user_choice_full: await ctx.send('Cú pháp sai! Phải cược vào `bầu`, `cua`, `tôm`, `cá`, `gà`, hoặc `nai`.'); return
     if bet_amount <= 0: await ctx.send('Số tiền cược phải lớn hơn 0!'); return
     if bet_amount > balance: await ctx.send(f'Bạn không đủ token. Bạn chỉ có {balance} 🪙.'); return
-    results = random.choices(BAU_CUA_LIST, k=3)
-    hits = results.count(user_choice_full)
-    results_str = f"Kết quả: **{results[0]} | {results[1]} | {results[2]}**"
-    embed = discord.Embed(title="🦀 Lắc Bầu Cua 🎲", description=f"{results_str}\n\n{ctx.author.mention} cược **{bet_amount}** 🪙 vào **{user_choice_full}**.")
+    final_results = random.choices(BAU_CUA_LIST, k=3)
+    embed = discord.Embed(title="🦀 Đang lắc Bầu Cua...", description="| ❔ | ❔ | ❔ |", color=discord.Color.dark_orange())
+    embed.set_footer(text=f"{ctx.author.display_name} cược {bet_amount} 🪙 vào {user_choice_full}")
+    msg = await ctx.send(embed=embed)
+    current_display = ['❔'] * 3
+    for i in range(5):
+        if i < 2: current_display[0] = random.choice(BAU_CUA_LIST)
+        else: current_display[0] = final_results[0]
+        if i < 3: current_display[1] = random.choice(BAU_CUA_LIST)
+        else: current_display[1] = final_results[1]
+        if i < 4: current_display[2] = random.choice(BAU_CUA_LIST)
+        else: current_display[2] = final_results[2]
+        embed.description = f"| **{current_display[0]}** | **{current_display[1]}** | **{current_display[2]}** |"
+        try: await msg.edit(embed=embed)
+        except discord.NotFound: return
+        await asyncio.sleep(0.7)
+    hits = final_results.count(user_choice_full); embed.title = "🦀 Lắc Bầu Cua 🎲"
     if hits > 0:
         winnings = bet_amount * hits; new_balance = update_balance(user_id, winnings)
-        embed.description += f"\n🎉 **Bạn đã thắng!** Trúng {hits} lần.\nBạn nhận được **{winnings}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.green()
+        embed.description += f"\n\n🎉 **Bạn đã thắng!** Trúng {hits} lần.\nBạn nhận được **{winnings}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.green()
     else:
         new_balance = update_balance(user_id, -bet_amount)
-        embed.description += f"\n😢 **Bạn đã thua!** Bạn mất **{bet_amount}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.red()
-    await ctx.send(embed=embed)
+        embed.description += f"\n\n😢 **Bạn đã thua!** Bạn mất **{bet_amount}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.red()
+    await msg.edit(embed=embed)
 
 @bot.command(name='duangua', aliases=['race'])
 @commands.check(is_user_in_game)
 async def dua_ngua(ctx, bet_amount: int, horse_number: int):
-    # (Lệnh !duangua đã được cung cấp ở lượt trước)
-    user_id, balance = ctx.author.id, get_user_data(user_id)['balance']
+    user_id, balance = ctx.author.id, get_user_data(ctx.author.id)['balance']
     if not 1 <= horse_number <= NUM_HORSES: await ctx.send(f'Cú pháp sai! Phải cược vào ngựa số `1` đến `{NUM_HORSES}`.'); return
     if bet_amount <= 0: await ctx.send('Số tiền cược phải lớn hơn 0!'); return
     if bet_amount > balance: await ctx.send(f'Bạn không đủ token. Bạn chỉ có {balance} 🪙.'); return
@@ -659,440 +658,256 @@ async def dua_ngua(ctx, bet_amount: int, horse_number: int):
     while winner is None:
         await asyncio.sleep(2)
         for i in range(NUM_HORSES):
-            if winner is None: # Chỉ ngựa nào chưa thắng mới được chạy
+            if winner is None:
                 positions[i] += random.randint(1, 3)
                 if positions[i] >= RACE_LENGTH:
-                    positions[i] = RACE_LENGTH # Chốt vị trí
-                    winner = i + 1 
+                    positions[i] = RACE_LENGTH; winner = i + 1 
         embed.description = get_race_track(positions)
         try: await race_msg.edit(embed=embed)
         except discord.NotFound: return
         if winner: break
     is_win = (winner == horse_number)
-    result_title = f"🐎 Ngựa số {winner} đã chiến thắng! 🏆"
-    result_description = get_race_track(positions)
+    result_title = f"🐎 Ngựa số {winner} đã chiến thắng! 🏆"; result_description = get_race_track(positions)
     if is_win:
         winnings = bet_amount * 4; new_balance = update_balance(user_id, winnings)
-        result_description += f"\n\n🎉 **Bạn đã thắng!** Ngựa số {horse_number} đã về nhất!\nBạn nhận được **{winnings}** token.\nSố dư mới: **{new_balance}** 🪙."
-        embed.color = discord.Color.green()
+        result_description += f"\n\n🎉 **Bạn đã thắng!** Ngựa số {horse_number} đã về nhất!\nBạn nhận được **{winnings}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.green()
     else:
         new_balance = update_balance(user_id, -bet_amount)
-        result_description += f"\n\n😢 **Bạn đã thua!** Ngựa của bạn (số {horse_number}) đã không thắng.\nBạn mất **{bet_amount}** token.\nSố dư mới: **{new_balance}** 🪙."
-        embed.color = discord.Color.red()
+        result_description += f"\n\n😢 **Bạn đã thua!** Ngựa của bạn (số {horse_number}) đã không thắng.\nBạn mất **{bet_amount}** token.\nSố dư mới: **{new_balance}** 🪙."; embed.color = discord.Color.red()
     embed.title = result_title; embed.description = result_description
     try: await race_msg.edit(embed=embed)
     except discord.NotFound: await ctx.send(embed=embed)
 
+@bot.command(name='quay', aliases=['roulette'])
+@commands.check(is_user_in_game)
+async def roulette(ctx, bet_amount: int, bet_type: str):
+    user_id, balance = ctx.author.id, get_user_data(ctx.author.id)['balance']
+    bet_type = bet_type.lower().strip()
+    if bet_amount <= 0: await ctx.send('Số tiền cược phải lớn hơn 0!'); return
+    if bet_amount > balance: await ctx.send(f'Bạn không đủ token. Bạn chỉ có {balance} 🪙.'); return
+    embed = discord.Embed(title="🎰 Vòng quay Roulette 🎰", description="Bóng đang quay... 🔄", color=discord.Color.dark_red())
+    embed.set_footer(text=f"{ctx.author.display_name} cược {bet_amount} 🪙 vào {bet_type}")
+    msg = await ctx.send(embed=embed)
+    spin_result = random.randint(0, 36)
+    spin_color = 'xanh lá 🟩' if spin_result == 0 else ('đỏ 🟥' if spin_result in RED_NUMBERS else 'đen ⬛')
+    await asyncio.sleep(4)
+    winnings = 0; payout_rate = 0; is_win = False
+    try:
+        bet_number = int(bet_type)
+        if 0 <= bet_number <= 36:
+            if spin_result == bet_number: payout_rate = 35; is_win = True
+        else: await ctx.send('Cược số không hợp lệ. Chỉ cược từ `0` đến `36`.'); await msg.delete(); return
+    except ValueError:
+        if bet_type in ['đỏ', 'red']:
+            if spin_result in RED_NUMBERS: payout_rate = 1; is_win = True
+        elif bet_type in ['đen', 'black']:
+            if spin_result in BLACK_NUMBERS: payout_rate = 1; is_win = True
+        elif bet_type in ['lẻ', 'odd']:
+            if spin_result != 0 and spin_result % 2 != 0: payout_rate = 1; is_win = True
+        elif bet_type in ['chẵn', 'even']:
+            if spin_result != 0 and spin_result % 2 == 0: payout_rate = 1; is_win = True
+        elif bet_type in ['nửa1', '1-18']:
+            if 1 <= spin_result <= 18: payout_rate = 1; is_win = True
+        elif bet_type in ['nửa2', '19-36']:
+            if 19 <= spin_result <= 36: payout_rate = 1; is_win = True
+        elif bet_type in ['tá1', '1-12']:
+            if 1 <= spin_result <= 12: payout_rate = 2; is_win = True
+        elif bet_type in ['tá2', '13-24']:
+            if 13 <= spin_result <= 24: payout_rate = 2; is_win = True
+        elif bet_type in ['tá3', '25-36']:
+            if 25 <= spin_result <= 36: payout_rate = 2; is_win = True
+        else: await ctx.send('Loại cược không hợp lệ. Gõ `!help` để xem các loại cược.'); await msg.delete(); return
+    result_message = f"**Bóng dừng tại số: {spin_result} ({spin_color})**\n\n{ctx.author.mention} đã cược **{bet_amount}** 🪙 vào **{bet_type}**.\n"
+    if is_win:
+        winnings = bet_amount * payout_rate; new_balance = update_balance(user_id, winnings)
+        result_message += f"🎉 **Bạn đã thắng!** (1 ăn {payout_rate})\nBạn nhận được **{winnings}** token.\n"; embed.color = discord.Color.green()
+    else:
+        new_balance = update_balance(user_id, -bet_amount)
+        result_message += f"😢 **Bạn đã thua!**\nBạn mất **{bet_amount}** token.\n"; embed.color = discord.Color.red()
+    result_message += f"Số dư mới: **{new_balance}** 🪙."
+    embed.description = result_message
+    await msg.edit(embed=embed)
 
-# --- GAME GIAO DIỆN UI (MỚI) ---
+
+# --- GAME GIAO DIỆN UI (BLACKJACK & MINES) ---
 
 # --- BLACKJACK (XÌ DÁCH) ---
 def create_deck():
-    """Tạo một bộ bài 52 lá đã xáo trộn."""
     deck = []
     for suit in CARD_SUITS:
         for rank in CARD_RANKS.keys():
-            if rank == 'A': # Blackjack A là 11 hoặc 1
-                deck.append({'rank': rank, 'suit': suit, 'value': 11})
-            else:
-                deck.append({'rank': rank, 'suit': suit, 'value': CARD_RANKS[rank] if CARD_RANKS[rank] < 11 else 10})
-    random.shuffle(deck)
-    return deck
+            if rank == 'A': deck.append({'rank': rank, 'suit': suit, 'value': 11})
+            else: deck.append({'rank': rank, 'suit': suit, 'value': CARD_RANKS[rank] if CARD_RANKS[rank] < 11 else 10})
+    random.shuffle(deck); return deck
 
 def calculate_score(hand):
-    """Tính điểm, xử lý A (Át)"""
     score = sum(card['value'] for card in hand)
     aces = sum(1 for card in hand if card['rank'] == 'A')
-    while score > 21 and aces:
-        score -= 10 # Chuyển A từ 11 -> 1
-        aces -= 1
+    while score > 21 and aces: score -= 10; aces -= 1
     return score
 
-def hand_to_string(hand):
-    """Chuyển list bài thành chuỗi text."""
-    return " | ".join(f"**{c['rank']}{c['suit']}**" for c in hand)
+def hand_to_string(hand): return " | ".join(f"**{c['rank']}{c['suit']}**" for c in hand)
 
 class BlackjackView(ui.View):
     def __init__(self, author_id, game):
-        super().__init__(timeout=300.0) # 5 phút
-        self.author_id = author_id
-        self.game = game # Tham chiếu đến dict game state
-
+        super().__init__(timeout=300.0); self.author_id = author_id; self.game = game
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        # Chỉ người chơi mới được bấm nút
         if interaction.user.id != self.author_id:
-            await interaction.response.send_message("Đây không phải ván bài của bạn!", ephemeral=True)
-            return False
+            await interaction.response.send_message("Đây không phải ván bài của bạn!", ephemeral=True); return False
         return True
-        
     async def on_timeout(self):
-        if self.author_id in bot.blackjack_games: # Nếu game vẫn còn
-            game = bot.blackjack_games.pop(self.author_id)
-            embed = game['embed']
-            embed.title = "🃏 Xì Dách (Hết giờ) 🃏"
-            embed.description = "Bạn đã không phản hồi. Ván bài bị hủy."
-            embed.color = discord.Color.dark_grey()
+        if self.author_id in bot.blackjack_games:
+            game = bot.blackjack_games.pop(self.author_id); embed = game['embed']
+            embed.title = "🃏 Xì Dách (Hết giờ) 🃏"; embed.description = "Bạn đã không phản hồi. Ván bài bị hủy."; embed.color = discord.Color.dark_grey()
             for item in self.children: item.disabled = True
             await game['message'].edit(embed=embed, view=self)
-
     async def end_game(self, interaction: discord.Interaction, result_text: str, payout: int):
-        """Hàm dọn dẹp và kết thúc game."""
-        user_id = self.author_id
-        
-        # Cập nhật số dư
-        new_balance = update_balance(user_id, payout)
-        
-        # Cập nhật Embed
-        embed = self.game['embed']
-        embed.title = f"🃏 Xì Dách ({result_text}) 🃏"
+        user_id = self.author_id; new_balance = update_balance(user_id, payout)
+        embed = self.game['embed']; embed.title = f"🃏 Xì Dách ({result_text}) 🃏"
         embed.color = discord.Color.green() if payout > 0 else (discord.Color.red() if payout < 0 else discord.Color.light_grey())
-        
-        # Hiển thị bài của Dealer
         dealer_score = calculate_score(self.game['dealer_hand'])
         embed.set_field_at(0, name=f"Bài Dealer ({dealer_score})", value=hand_to_string(self.game['dealer_hand']), inline=False)
-        
-        # Hiển thị kết quả
-        if payout > 0:
-            embed.description = f"🎉 **Bạn thắng {payout} 🪙!**\nSố dư mới: **{new_balance}** 🪙."
-        elif payout < 0:
-            embed.description = f"😢 **Bạn thua {abs(payout)} 🪙!**\nSố dư mới: **{new_balance}** 🪙."
-        else:
-            embed.description = f"⚖️ **Hòa (Push)!**\nBạn được hoàn tiền. Số dư: **{new_balance}** 🪙."
-            
-        # Tắt nút
+        if payout > 0: embed.description = f"🎉 **Bạn thắng {payout} 🪙!**\nSố dư mới: **{new_balance}** 🪙."
+        elif payout < 0: embed.description = f"😢 **Bạn thua {abs(payout)} 🪙!**\nSố dư mới: **{new_balance}** 🪙."
+        else: embed.description = f"⚖️ **Hòa (Push)!**\nBạn được hoàn tiền. Số dư: **{new_balance}** 🪙."
         for item in self.children: item.disabled = True
         await interaction.response.edit_message(embed=embed, view=self)
-        
-        # Xóa game khỏi state
         bot.blackjack_games.pop(user_id, None)
-
     @ui.button(label="Rút (Hit)", style=discord.ButtonStyle.primary, emoji="➕")
     async def hit(self, interaction: discord.Interaction, button: ui.Button):
-        game = self.game
-        
-        # Rút bài
-        game['player_hand'].append(game['deck'].pop())
-        player_score = calculate_score(game['player_hand'])
-        
-        # Cập nhật Embed
-        embed = game['embed']
-        embed.set_field_at(1, name=f"Bài của bạn ({player_score})", value=hand_to_string(game['player_hand']), inline=False)
-        
-        if player_score > 21:
-            # Quắc (Bust)
-            await self.end_game(interaction, "Bạn bị Quắc!", -game['bet'])
-        else:
-            # Vô hiệu hóa nút Gấp đôi sau khi rút
-            self.children[2].disabled = True # Nút Double
-            await interaction.response.edit_message(embed=embed, view=self)
-
+        game = self.game; game['player_hand'].append(game['deck'].pop()); player_score = calculate_score(game['player_hand'])
+        embed = game['embed']; embed.set_field_at(1, name=f"Bài của bạn ({player_score})", value=hand_to_string(game['player_hand']), inline=False)
+        if player_score > 21: await self.end_game(interaction, "Bạn bị Quắc!", -game['bet'])
+        else: self.children[2].disabled = True; await interaction.response.edit_message(embed=embed, view=self)
     @ui.button(label="Dằn (Stand)", style=discord.ButtonStyle.secondary, emoji="🛑")
     async def stand(self, interaction: discord.Interaction, button: ui.Button):
-        game = self.game
-        
-        # Lượt của Dealer
-        dealer_hand = game['dealer_hand']
-        dealer_score = calculate_score(dealer_hand)
-        
-        while dealer_score < 17:
-            dealer_hand.append(game['deck'].pop())
-            dealer_score = calculate_score(dealer_hand)
-            
+        game = self.game; dealer_hand = game['dealer_hand']; dealer_score = calculate_score(dealer_hand)
+        while dealer_score < 17: dealer_hand.append(game['deck'].pop()); dealer_score = calculate_score(dealer_hand)
         player_score = calculate_score(game['player_hand'])
-
-        # So sánh
-        if dealer_score > 21:
-            await self.end_game(interaction, "Dealer bị Quắc!", game['bet']) # Thắng 1:1
-        elif dealer_score > player_score:
-            await self.end_game(interaction, "Dealer thắng!", -game['bet']) # Thua
-        elif player_score > dealer_score:
-            await self.end_game(interaction, "Bạn thắng!", game['bet']) # Thắng 1:1
-        else:
-            await self.end_game(interaction, "Hòa!", 0) # Hòa
-
+        if dealer_score > 21: await self.end_game(interaction, "Dealer bị Quắc!", game['bet'])
+        elif dealer_score > player_score: await self.end_game(interaction, "Dealer thắng!", -game['bet'])
+        elif player_score > dealer_score: await self.end_game(interaction, "Bạn thắng!", game['bet'])
+        else: await self.end_game(interaction, "Hòa!", 0)
     @ui.button(label="Gấp đôi (Double)", style=discord.ButtonStyle.success, emoji="✖️2")
     async def double(self, interaction: discord.Interaction, button: ui.Button):
-        game = self.game
-        user_id = self.author_id
-        
-        # Kiểm tra xem đủ tiền gấp đôi không
+        game = self.game; user_id = self.author_id
         if get_user_data(user_id)['balance'] < game['bet'] * 2:
-            await interaction.response.send_message("Bạn không đủ tiền để Gấp đôi!", ephemeral=True)
-            return
-            
-        # Gấp đôi cược
-        game['bet'] *= 2
-        
-        # Rút 1 lá BẮT BUỘC
-        game['player_hand'].append(game['deck'].pop())
-        player_score = calculate_score(game['player_hand'])
-        
-        # Cập nhật Embed
-        embed = game['embed']
-        embed.set_field_at(1, name=f"Bài của bạn ({player_score})", value=hand_to_string(game['player_hand']), inline=False)
+            await interaction.response.send_message("Bạn không đủ tiền để Gấp đôi!", ephemeral=True); return
+        game['bet'] *= 2; game['player_hand'].append(game['deck'].pop()); player_score = calculate_score(game['player_hand'])
+        embed = game['embed']; embed.set_field_at(1, name=f"Bài của bạn ({player_score})", value=hand_to_string(game['player_hand']), inline=False)
         embed.set_footer(text=f"ĐÃ GẤP ĐÔI! Cược: {game['bet']} 🪙")
-
-        if player_score > 21:
-            # Quắc -> Kết thúc game ngay
-            await self.end_game(interaction, "Bạn bị Quắc!", -game['bet'])
-        else:
-            # Tự động Dằn (Stand)
-            await self.stand(interaction, button)
+        if player_score > 21: await self.end_game(interaction, "Bạn bị Quắc!", -game['bet'])
+        else: await self.stand(interaction, button)
 
 @bot.command(name='blackjack', aliases=['bj'])
-@commands.check(is_user_in_game) # Check xem có đang chơi game UI không
+@commands.check(is_user_in_game)
 async def blackjack(ctx, bet_amount: int):
-    """Chơi Xì Dách (Blackjack) với bot."""
-    user_id = ctx.author.id
-    balance = get_user_data(user_id)['balance']
-    
+    user_id = ctx.author.id; balance = get_user_data(user_id)['balance']
     if bet_amount <= 0: await ctx.send('Số tiền cược phải lớn hơn 0!'); return
     if bet_amount > balance: await ctx.send(f'Bạn không đủ token. Bạn chỉ có {balance} 🪙.'); return
-    
-    # Khởi tạo game
-    deck = create_deck()
-    player_hand = [deck.pop(), deck.pop()]
-    dealer_hand = [deck.pop(), deck.pop()]
-    
-    player_score = calculate_score(player_hand)
-    dealer_score = calculate_score(dealer_hand) # Tính điểm ban đầu
-    
-    # Tạo Embed
+    deck = create_deck(); player_hand = [deck.pop(), deck.pop()]; dealer_hand = [deck.pop(), deck.pop()]
+    player_score = calculate_score(player_hand); dealer_score = calculate_score(dealer_hand)
     embed = discord.Embed(title="🃏 Xì Dách 🃏", description="Chọn hành động của bạn.", color=discord.Color.blue())
-    # Chỉ hiện 1 lá của dealer
     embed.add_field(name=f"Bài Dealer (?)", value=f"**{dealer_hand[0]['rank']}{dealer_hand[0]['suit']}** | **[ ? ]**", inline=False)
     embed.add_field(name=f"Bài của bạn ({player_score})", value=hand_to_string(player_hand), inline=False)
-    embed.set_footer(text=f"Tiền cược: {bet_amount} 🪙")
-    
-    # Tạo View (Nút bấm)
-    view = BlackjackView(user_id, None)
-    
-    # Xử lý Blackjack (Thắng 1.5x)
+    embed.set_footer(text=f"Tiền cược: {bet_amount} 🪙"); view = BlackjackView(user_id, None)
     if player_score == 21:
-        # Thắng ngay
-        winnings = int(bet_amount * 1.5)
-        new_balance = update_balance(user_id, winnings)
-        embed.title = "🃏 BLACKJACK! 🃏"
-        embed.description = f"🎉 **Bạn thắng {winnings} 🪙!**\nSố dư mới: **{new_balance}** 🪙."
-        embed.color = discord.Color.gold()
-        embed.set_field_at(0, name=f"Bài Dealer ({dealer_score})", value=hand_to_string(dealer_hand), inline=False)
-        for item in view.children: item.disabled = True # Tắt nút
-        await ctx.send(embed=embed, view=view)
-        return
-        
-    # Gửi tin nhắn và lưu state
+        winnings = int(bet_amount * 1.5); new_balance = update_balance(user_id, winnings)
+        embed.title = "🃏 BLACKJACK! 🃏"; embed.description = f"🎉 **Bạn thắng {winnings} 🪙!**\nSố dư mới: **{new_balance}** 🪙."
+        embed.color = discord.Color.gold(); embed.set_field_at(0, name=f"Bài Dealer ({dealer_score})", value=hand_to_string(dealer_hand), inline=False)
+        for item in view.children: item.disabled = True
+        await ctx.send(embed=embed, view=view); return
     message = await ctx.send(embed=embed, view=view)
-    
-    # Lưu state
-    game_state = {
-        'bet': bet_amount,
-        'deck': deck,
-        'player_hand': player_hand,
-        'dealer_hand': dealer_hand,
-        'message': message,
-        'embed': embed
-    }
-    bot.blackjack_games[user_id] = game_state
-    view.game = game_state # Cập nhật tham chiếu
+    game_state = {'bet': bet_amount, 'deck': deck, 'player_hand': player_hand, 'dealer_hand': dealer_hand, 'message': message, 'embed': embed}
+    bot.blackjack_games[user_id] = game_state; view.game = game_state
 
 
 # --- MINES (DÒ MÌN) ---
-
-# Hàm tính tổ hợp C(n, k) để tính tỷ lệ
 def combinations(n, k):
     if k < 0 or k > n: return 0
     return math.factorial(n) // (math.factorial(k) * math.factorial(n - k))
-
-# Hàm tính Payout cho Dò Mìn
 def calculate_mines_payout(gems_revealed, total_bombs):
-    total_cells = 25
-    # Payout = (C(25, gems) / C(25 - bombs, gems)) * 0.95 (95% Payout)
-    numerator = combinations(total_cells, gems_revealed)
-    denominator = combinations(total_cells - total_bombs, gems_revealed)
-    if denominator == 0: return 1.0 # Trường hợp chia cho 0
+    numerator = combinations(25, gems_revealed); denominator = combinations(25 - total_bombs, gems_revealed)
+    if denominator == 0: return 1.0
     return (numerator / denominator) * 0.95
 
 class MinesButton(ui.Button):
     def __init__(self, x, y):
-        super().__init__(style=discord.ButtonStyle.secondary, label="\u200b", row=x) # \u200b là ký tự trống
-        self.x = x
-        self.y = y
-
+        super().__init__(style=discord.ButtonStyle.secondary, label="\u200b", row=x); self.x = x; self.y = y
     async def callback(self, interaction: discord.Interaction):
-        # Chỉ người chơi mới được bấm
-        if interaction.user.id not in bot.mines_games:
-            await interaction.response.send_message("Đây không phải game của bạn!", ephemeral=True); return
-        if interaction.user.id != self.view.author_id:
-            await interaction.response.send_message("Đây không phải game của bạn!", ephemeral=True); return
-
-        game = bot.mines_games[interaction.user.id]
-        
-        # Kiểm tra xem lật trúng gì
-        index = self.x * 5 + self.y
+        if interaction.user.id not in bot.mines_games: await interaction.response.send_message("Đây không phải game của bạn!", ephemeral=True); return
+        if interaction.user.id != self.view.author_id: await interaction.response.send_message("Đây không phải game của bạn!", ephemeral=True); return
+        game = bot.mines_games[interaction.user.id]; index = self.x * 5 + self.y
         if game['grid'][index] == '💣':
-            # --- TRÚNG BOM ---
-            self.style = discord.ButtonStyle.danger
-            self.label = '💣'
-            self.disabled = True
-            
-            # Cập nhật số dư
-            new_balance = update_balance(interaction.user.id, -game['bet'])
-            
-            embed = game['embed']
-            embed.title = "💥 BÙM! BẠN ĐÃ THUA! 💥"
-            embed.description = f"Bạn lật trúng bom!\nBạn mất **{game['bet']}** 🪙.\nSố dư mới: **{new_balance}** 🪙."
-            embed.color = discord.Color.red()
-            
-            # Tắt game
-            self.view.stop_game(show_solution=True)
-            await interaction.response.edit_message(embed=embed, view=self.view)
-            bot.mines_games.pop(interaction.user.id, None)
-
+            self.style = discord.ButtonStyle.danger; self.label = '💣'; self.disabled = True
+            new_balance = update_balance(interaction.user.id, -game['bet']); embed = game['embed']
+            embed.title = "💥 BÙM! BẠN ĐÃ THUA! 💥"; embed.description = f"Bạn lật trúng bom!\nBạn mất **{game['bet']}** 🪙.\nSố dư mới: **{new_balance}** 🪙."
+            embed.color = discord.Color.red(); self.view.stop_game(show_solution=True)
+            await interaction.response.edit_message(embed=embed, view=self.view); bot.mines_games.pop(interaction.user.id, None)
         else:
-            # --- TRÚNG KIM CƯƠNG ---
-            self.style = discord.ButtonStyle.success
-            self.label = '💎'
-            self.disabled = True
-            
-            game['revealed_count'] += 1
-            
-            # Tính Payout mới
-            payout = calculate_mines_payout(game['revealed_count'], game['bomb_count'])
-            game['current_payout'] = payout
-            winnings = int(game['bet'] * (payout - 1)) # Tiền lời
-            
-            embed = game['embed']
+            self.style = discord.ButtonStyle.success; self.label = '💎'; self.disabled = True; game['revealed_count'] += 1
+            payout = calculate_mines_payout(game['revealed_count'], game['bomb_count']); game['current_payout'] = payout
+            winnings = int(game['bet'] * (payout - 1)); embed = game['embed']
             embed.description = f"Tìm thấy **{game['revealed_count']}** 💎. Lật tiếp hoặc Rút tiền!"
-            # Cập nhật nút Cashout
             self.view.children[-1].label = f"Rút tiền ({payout:.2f}x | {winnings} 🪙)"
-            
-            # Kiểm tra xem thắng tuyệt đối chưa
             if game['revealed_count'] == (25 - game['bomb_count']):
-                # Thắng tuyệt đối
-                new_balance = update_balance(interaction.user.id, winnings)
-                embed.title = "🎉 BẠN ĐÃ THẮNG TUYỆT ĐỐI! 🎉"
+                new_balance = update_balance(interaction.user.id, winnings); embed.title = "🎉 BẠN ĐÃ THẮNG TUYỆT ĐỐI! 🎉"
                 embed.description = f"Bạn đã tìm thấy tất cả {game['revealed_count']} 💎!\nBạn thắng **{winnings}** 🪙.\nSố dư mới: **{new_balance}** 🪙."
-                embed.color = discord.Color.gold()
-                self.view.stop_game(show_solution=False) # Không cần show, vì đã lật hết
-                await interaction.response.edit_message(embed=embed, view=self.view)
-                bot.mines_games.pop(interaction.user.id, None)
-            else:
-                # Vẫn tiếp tục
-                await interaction.response.edit_message(embed=embed, view=self.view)
+                embed.color = discord.Color.gold(); self.view.stop_game(show_solution=False)
+                await interaction.response.edit_message(embed=embed, view=self.view); bot.mines_games.pop(interaction.user.id, None)
+            else: await interaction.response.edit_message(embed=embed, view=self.view)
 
 class MinesCashoutButton(ui.Button):
-    def __init__(self):
-        super().__init__(style=discord.ButtonStyle.primary, label="Rút tiền (1.00x)", row=4)
-        
+    def __init__(self): super().__init__(style=discord.ButtonStyle.primary, label="Rút tiền (1.00x)", row=4)
     async def callback(self, interaction: discord.Interaction):
-        if interaction.user.id not in bot.mines_games:
-            await interaction.response.send_message("Đây không phải game của bạn!", ephemeral=True); return
-        if interaction.user.id != self.view.author_id:
-            await interaction.response.send_message("Đây không phải game của bạn!", ephemeral=True); return
-            
+        if interaction.user.id not in bot.mines_games: await interaction.response.send_message("Đây không phải game của bạn!", ephemeral=True); return
+        if interaction.user.id != self.view.author_id: await interaction.response.send_message("Đây không phải game của bạn!", ephemeral=True); return
         game = bot.mines_games[interaction.user.id]
-        
-        # Nếu chưa lật ô nào
-        if game['revealed_count'] == 0:
-            await interaction.response.send_message("Bạn phải lật ít nhất 1 ô!", ephemeral=True)
-            return
-            
-        # Tính tiền thắng
-        winnings = int(game['bet'] * (game['current_payout'] - 1)) # Tiền lời
-        new_balance = update_balance(interaction.user.id, winnings)
-        
-        embed = game['embed']
-        embed.title = "✅ RÚT TIỀN THÀNH CÔNG ✅"
+        if game['revealed_count'] == 0: await interaction.response.send_message("Bạn phải lật ít nhất 1 ô!", ephemeral=True); return
+        winnings = int(game['bet'] * (game['current_payout'] - 1)); new_balance = update_balance(interaction.user.id, winnings)
+        embed = game['embed']; embed.title = "✅ RÚT TIỀN THÀNH CÔNG ✅"
         embed.description = f"Bạn rút tiền tại **{game['current_payout']:.2f}x**.\nBạn thắng **{winnings}** 🪙.\nSố dư mới: **{new_balance}** 🪙."
-        embed.color = discord.Color.green()
-        
-        # Tắt game
-        self.view.stop_game(show_solution=True)
-        await interaction.response.edit_message(embed=embed, view=self.view)
-        bot.mines_games.pop(interaction.user.id, None)
+        embed.color = discord.Color.green(); self.view.stop_game(show_solution=True)
+        await interaction.response.edit_message(embed=embed, view=self.view); bot.mines_games.pop(interaction.user.id, None)
 
 class MinesView(ui.View):
     def __init__(self, author_id, game):
-        super().__init__(timeout=300.0) # 5 phút
-        self.author_id = author_id
-        
-        # Tạo 25 nút (5x5)
-        for x in range(4): # Chỉ 4 hàng đầu
-            for y in range(5):
-                self.add_item(MinesButton(x, y))
-        # Hàng cuối cùng (4 nút + 1 nút cashout)
-        for y in range(4): 
-             self.add_item(MinesButton(4, y))
-        self.add_item(MinesCashoutButton()) # Nút thứ 25
-        
-        # Hàm này để tham chiếu ngược lại game state
-        # (cần thiết cho các nút bấm)
-        self.game = game
-
+        super().__init__(timeout=300.0); self.author_id = author_id
+        for x in range(4):
+            for y in range(5): self.add_item(MinesButton(x, y))
+        for y in range(4): self.add_item(MinesButton(4, y))
+        self.add_item(MinesCashoutButton()); self.game = game
     async def on_timeout(self):
         if self.author_id in bot.mines_games:
-            game = bot.mines_games.pop(self.author_id)
-            embed = game['embed']
-            embed.title = "💣 Dò Mìn (Hết giờ) 💣"
-            embed.description = "Bạn đã không phản hồi. Ván game bị hủy. Bạn không mất tiền."
-            embed.color = discord.Color.dark_grey()
-            self.stop_game(show_solution=False)
+            game = bot.mines_games.pop(self.author_id); embed = game['embed']
+            embed.title = "💣 Dò Mìn (Hết giờ) 💣"; embed.description = "Bạn đã không phản hồi. Ván game bị hủy. Bạn không mất tiền."
+            embed.color = discord.Color.dark_grey(); self.stop_game(show_solution=False)
             await game['message'].edit(embed=embed, view=self)
-
     def stop_game(self, show_solution: bool):
-        """Tắt tất cả các nút và hiện đáp án."""
         game = self.game
         for i, item in enumerate(self.children):
             item.disabled = True
             if show_solution and isinstance(item, MinesButton):
-                if game['grid'][i] == '💣':
-                    item.label = '💣'
-                    item.style = discord.ButtonStyle.danger
+                if game['grid'][i] == '💣': item.label = '💣'; item.style = discord.ButtonStyle.danger
                 elif game['grid'][i] == '💎':
                      item.label = '💎'
-                     # Giữ style success nếu đã lật, secondary nếu chưa lật
-                     if item.style != discord.ButtonStyle.success:
-                        item.style = discord.ButtonStyle.secondary
+                     if item.style != discord.ButtonStyle.success: item.style = discord.ButtonStyle.secondary
 
 @bot.command(name='mines', aliases=['domin'])
-@commands.check(is_user_in_game) # Check xem có đang chơi game UI không
+@commands.check(is_user_in_game)
 async def mines(ctx, bet_amount: int, bomb_count: int):
-    """Chơi Dò Mìn."""
-    user_id = ctx.author.id
-    balance = get_user_data(user_id)['balance']
-    
+    user_id = ctx.author.id; balance = get_user_data(user_id)['balance']
     if bet_amount <= 0: await ctx.send('Số tiền cược phải lớn hơn 0!'); return
     if bet_amount > balance: await ctx.send(f'Bạn không đủ token. Bạn chỉ có {balance} 🪙.'); return
-    if not 1 <= bomb_count <= 24:
-        await ctx.send("Số bom phải từ 1 đến 24."); return
-        
-    # Tạo game grid
-    grid = ['💣'] * bomb_count + ['💎'] * (25 - bomb_count)
-    random.shuffle(grid)
-    
-    embed = discord.Embed(title=f"💣 Dò Mìn ({bomb_count} bom) 💣",
-                          description="Lật các ô để tìm kim cương 💎. Đừng trúng bom 💣!",
-                          color=discord.Color.blue())
+    if not 1 <= bomb_count <= 24: await ctx.send("Số bom phải từ 1 đến 24."); return
+    grid = ['💣'] * bomb_count + ['💎'] * (25 - bomb_count); random.shuffle(grid)
+    embed = discord.Embed(title=f"💣 Dò Mìn ({bomb_count} bom) 💣", description="Lật các ô để tìm kim cương 💎. Đừng trúng bom 💣!", color=discord.Color.blue())
     embed.add_field(name="Tiền cược", value=f"**{bet_amount}** 🪙")
     embed.add_field(name="Hệ số", value="1.00x")
     embed.add_field(name="Tiền thắng", value="0 🪙")
-    
-    game_state = {
-        'bet': bet_amount,
-        'bomb_count': bomb_count,
-        'grid': grid,
-        'revealed_count': 0,
-        'current_payout': 1.0,
-        'message': None, # Sẽ cập nhật
-        'embed': embed
-    }
-    
-    view = MinesView(user_id, game_state)
-    message = await ctx.send(embed=embed, view=view)
-    
-    # Cập nhật state
-    game_state['message'] = message
-    bot.mines_games[user_id] = game_state
+    game_state = {'bet': bet_amount, 'bomb_count': bomb_count, 'grid': grid, 'revealed_count': 0, 'current_payout': 1.0, 'message': None, 'embed': embed}
+    view = MinesView(user_id, game_state); message = await ctx.send(embed=embed, view=view)
+    game_state['message'] = message; bot.mines_games[user_id] = game_state
 
 # --- CHẠY BOT ---
 if TOKEN:
