@@ -1,23 +1,35 @@
 # bot.py
 # -*- coding: utf-8 -*-
 """
-Single-file Casino Discord Bot (slash commands)
-- Supabase-backed (profiles + taixiu_history + adjust_balance RPC)
+Complete single-file Casino Discord Bot (slash commands)
+Includes:
+- Supabase-backed profiles + taixiu_history + adjust_balance RPC
 - Tài Xỉu 4 cửa: automatic rounds 30s, live embed updated every 5s (cầu trực tiếp)
-- Games: taixiu (real-time), slots, baccarat, blackjack, xucxac, baucua, duangua, roulette
-- Commands: /balance, /daily, /taixiu, /cautaixiu, /top, /toptaixiu, etc.
+- Games: slots, baccarat, blackjack, xucxac, baucua, duangua, roulette
+- Commands: /balance, /daily, /taixiu, /cautaixiu, /top, /toptaixiu, /slots, /baccarat, /blackjack, /xucxac, /baucua, /duangua, /roulette
+- Keep-alive Flask endpoint for Render + UptimerBot
+Usage:
+- Create .env with DISCORD_TOKEN, SUPABASE_URL, SUPABASE_KEY
+- Run: python bot.py
 """
+
 import os
 import random
 import asyncio
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 import pytz
+import logging
 
+# Discord and web
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 from dotenv import load_dotenv
+
+# Flask keep-alive
+from flask import Flask
+from threading import Thread
 
 # Supabase client
 try:
@@ -47,6 +59,28 @@ else:
 VIETNAM_TZ = pytz.timezone("Asia/Ho_Chi_Minh")
 STARTING_TOKENS = 100
 
+# Logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("casino-bot")
+
+# -----------------------
+# Keep alive Flask for Render free tier
+# -----------------------
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run_web)
+    t.daemon = True
+    t.start()
+
 # -----------------------
 # Constants & helpers
 # -----------------------
@@ -63,7 +97,10 @@ CARD_SUITS = ['♥️','♦️','♣️','♠️']
 CARD_RANKS_BACCARAT = {'2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9,'10':0,'J':0,'Q':0,'K':0,'A':1}
 
 def fmt_num(n:int)->str:
-    return f"{n:,}"
+    try:
+        return f"{n:,}"
+    except Exception:
+        return str(n)
 
 # -----------------------
 # Bot setup
@@ -84,9 +121,8 @@ bot.taixiu_state = {
 # Taixiu config
 TAIXIU_BET_WINDOW = 30
 TAIXIU_EMBED_UPDATE = 5
-TAIXIU_HISTORY_DISPLAY = 20
+TAIXIU_HISTORY_DISPLAY = 40
 
-# Emoji mapping
 EMOJI_TAI = "🔴"
 EMOJI_XIU = "⚪"
 EMOJI_CHAN = "🟢"
@@ -113,19 +149,19 @@ def get_user_data(user_id:int)->Optional[Dict]:
         data.setdefault('games_played', 0)
         return data
     except Exception as e:
-        print("get_user_data error:", e)
+        logger.exception("get_user_data error")
         return None
 
 def update_balance(user_id:int, amount:int)->Optional[int]:
     """Atomically adjust balance by calling RPC adjust_balance. Returns new balance or None."""
     if supabase is None:
-        print("update_balance: supabase not configured")
+        logger.debug("update_balance called but supabase not configured")
         return None
     try:
         res = supabase.rpc('adjust_balance', {'user_id_input': user_id, 'amount_input': amount}).execute()
         return res.data
     except Exception as e:
-        print("update_balance error:", e)
+        logger.exception("update_balance error")
         return None
 
 def update_profile_stats(user_id:int, bet_amount:int, net_gain:int):
@@ -140,7 +176,7 @@ def update_profile_stats(user_id:int, bet_amount:int, net_gain:int):
         games_played = data.get('games_played', 0) + 1
         supabase.table('profiles').update({'total_bet': total_bet, 'total_won': total_won, 'games_played': games_played}).eq('user_id', user_id).execute()
     except Exception as e:
-        print("update_profile_stats error:", e)
+        logger.exception("update_profile_stats error")
 
 async def save_taixiu_result(dice:List[int], total:int):
     if supabase is None:
@@ -153,7 +189,7 @@ async def save_taixiu_result(dice:List[int], total:int):
             'result_chan': (total % 2 == 0)
         }).execute()
     except Exception as e:
-        print("save_taixiu_result error:", e)
+        logger.exception("save_taixiu_result error")
 
 async def load_taixiu_history(limit:int=20)->List[Dict]:
     if supabase is None:
@@ -162,7 +198,7 @@ async def load_taixiu_history(limit:int=20)->List[Dict]:
         resp = supabase.table('taixiu_history').select('*').order('id', desc=True).limit(limit).execute()
         return resp.data or []
     except Exception as e:
-        print("load_taixiu_history error:", e)
+        logger.exception("load_taixiu_history error")
         return []
 
 # -----------------------
@@ -183,7 +219,6 @@ async def taixiu_embed_updater():
     if channel is None:
         return
 
-    # ensure an embed message exists (create if missing)
     try:
         message = None
         if state.get('embed_message_id'):
@@ -232,14 +267,13 @@ async def taixiu_embed_updater():
 
         await message.edit(embed=embed)
     except Exception as e:
-        print("taixiu_embed_updater error:", e)
+        logger.exception("taixiu_embed_updater error")
 
 # -----------------------
 # Taixiu round runner
 # -----------------------
 async def taixiu_round_runner_once(channel:discord.TextChannel):
     state = bot.taixiu_state
-    # announce
     try:
         await channel.send(f"🕐 Ván Tài Xỉu mới bắt đầu! Bạn có **{TAIXIU_BET_WINDOW} giây** đặt cược bằng `/taixiu`.")
     except Exception:
@@ -249,7 +283,6 @@ async def taixiu_round_runner_once(channel:discord.TextChannel):
     await asyncio.sleep(TAIXIU_BET_WINDOW)
     state['locked'] = True
 
-    # roll
     dice = [random.randint(1,6) for _ in range(3)]
     total = sum(dice)
     result_tai = total >= 11
@@ -278,7 +311,6 @@ async def taixiu_round_runner_once(channel:discord.TextChannel):
             update_balance(uid, net)
         update_profile_stats(uid, total_bet, net)
 
-    # result embed (single message)
     e1,e2 = taixiu_outcome_to_emojis(total)
     result_text = f"🎲 {dice[0]} + {dice[1]} + {dice[2]} = **{total}** điểm\nKết quả: **{'TÀI' if result_tai else 'XỈU'} {e1} - {'CHẴN' if result_chan else 'LẺ'} {e2}**"
     embed = discord.Embed(title="💥 Kết quả ván Tài Xỉu", description=result_text, color=discord.Color.green())
@@ -287,7 +319,6 @@ async def taixiu_round_runner_once(channel:discord.TextChannel):
     except Exception:
         pass
 
-    # reset bets
     state['bets'] = {}
 
 async def taixiu_loop():
@@ -297,7 +328,6 @@ async def taixiu_loop():
     channel = bot.get_channel(state['channel_id'])
     if channel is None:
         return
-    # ensure embed updater running
     if not taixiu_embed_updater.is_running():
         taixiu_embed_updater.start()
     while state.get('channel_id') == channel.id:
@@ -307,15 +337,16 @@ async def taixiu_loop():
         taixiu_embed_updater.cancel()
 
 # -----------------------
-# Slash commands
+# Slash commands (games + utilities)
 # -----------------------
 @bot.event
 async def on_ready():
     try:
         await bot.tree.sync()
+        logger.info("Commands synced.")
     except Exception as e:
-        print("Sync error:", e)
-    print(f"Bot ready: {bot.user} (id: {bot.user.id})")
+        logger.exception("Sync error")
+    logger.info(f"Bot ready: {bot.user} (id: {bot.user.id})")
 
 # /balance
 @bot.tree.command(name="balance", description="Xem số dư token của bạn")
@@ -436,7 +467,7 @@ async def top_cmd(interaction:discord.Interaction, top_n:int=10):
             embed.add_field(name=f"#{i} — <@{uid}>", value=f"**{fmt_num(bal)}** 🪙", inline=False)
         await interaction.followup.send(embed=embed)
     except Exception as e:
-        print("top_cmd error:", e)
+        logger.exception("top_cmd error")
         await interaction.followup.send("Lỗi lấy dữ liệu bảng xếp hạng.", ephemeral=True)
 
 # /toptaixiu (top by total_won)
@@ -456,10 +487,10 @@ async def toptaixiu_cmd(interaction:discord.Interaction, top_n:int=10):
         for i,row in enumerate(rows, start=1):
             uid = row.get('user_id'); tw = row.get('total_won',0)
             embed.add_field(name=f"#{i} — <@{uid}>", value=f"**{fmt_num(tw)}** 🪙", inline=False)
-        embed.set_footer(text="Lưu ý: total_won là tổng thắng trên profiles (tất cả game). Nếu bạn muốn chỉ riêng Tài Xỉu, cần track per-game stats.")
+        embed.set_footer(text="total_won là tổng thắng trên profiles (tất cả game).")
         await interaction.followup.send(embed=embed)
     except Exception as e:
-        print("toptaixiu error:", e)
+        logger.exception("toptaixiu error")
         await interaction.followup.send("Lỗi lấy dữ liệu bảng xếp hạng.", ephemeral=True)
 
 # /slots
@@ -491,7 +522,7 @@ async def slots_cmd(interaction:discord.Interaction, bet_amount:int):
             embed.add_field(name="Bạn thua", value=f"Mất **{fmt_num(bet_amount)}** 🪙\nSố dư: **{fmt_num(get_user_data(uid).get('balance',0))}**")
         await interaction.followup.send(embed=embed)
     except Exception as e:
-        print("slots error:", e)
+        logger.exception("slots error")
         await interaction.followup.send("Lỗi khi chơi Slots.", ephemeral=True)
     finally:
         bot.users_in_animation.discard(uid)
@@ -567,7 +598,7 @@ async def baccarat_cmd(interaction:discord.Interaction, bet_amount:int, choice:s
             embed.description = f"😢 Bạn thua **{fmt_num(bet_amount)}** 🪙\nSố dư: **{fmt_num(get_user_data(uid).get('balance',0))}**"
         await interaction.followup.send(embed=embed)
     except Exception as e:
-        print("baccarat error:", e)
+        logger.exception("baccarat error")
         await interaction.followup.send("Lỗi Baccarat.", ephemeral=True)
     finally:
         bot.users_in_animation.discard(uid)
@@ -613,7 +644,7 @@ async def blackjack_cmd(interaction:discord.Interaction, bet_amount:int):
         embed.description = msg + f"\nSố dư: **{fmt_num(get_user_data(uid).get('balance',0))}**"
         await interaction.followup.send(embed=embed)
     except Exception as e:
-        print("blackjack error:", e)
+        logger.exception("blackjack error")
         await interaction.followup.send("Lỗi Blackjack.", ephemeral=True)
     finally:
         bot.users_in_animation.discard(uid)
@@ -643,7 +674,7 @@ async def xucxac_cmd(interaction:discord.Interaction, bet_amount:int, guess:app_
             embed.description = f"😢 Bạn đoán sai. Mất **{fmt_num(bet_amount)}** 🪙\nSố dư: **{fmt_num(get_user_data(uid).get('balance',0))}**"
         await interaction.followup.send(embed=embed)
     except Exception as e:
-        print("xucxac error:", e)
+        logger.exception("xucxac error")
         await interaction.followup.send("Lỗi xúc xắc.", ephemeral=True)
     finally:
         bot.users_in_animation.discard(uid)
@@ -684,7 +715,7 @@ async def baucua_cmd(interaction:discord.Interaction, bet_amount:int, choice:str
             embed.description = f"| {rolls[0]} | {rolls[1]} | {rolls[2]} |\n😢 Bạn thua — Mất **{fmt_num(bet_amount)}** 🪙\nSố dư: **{fmt_num(get_user_data(uid).get('balance',0))}**"
         await interaction.followup.send(embed=embed)
     except Exception as e:
-        print("baucua error:", e)
+        logger.exception("baucua error")
         await interaction.followup.send("Lỗi Bầu Cua.", ephemeral=True)
     finally:
         bot.users_in_animation.discard(uid)
@@ -738,7 +769,7 @@ async def duangua_cmd(interaction:discord.Interaction, bet_amount:int, horse_num
         except:
             await interaction.followup.send(embed=embed)
     except Exception as e:
-        print("duangua error:", e)
+        logger.exception("duangua error")
         await interaction.followup.send("Lỗi đua ngựa.", ephemeral=True)
     finally:
         bot.users_in_animation.discard(uid)
@@ -767,7 +798,7 @@ async def roulette_cmd(interaction:discord.Interaction, bet_amount:int, bet_type
     uid = interaction.user.id
     user = get_user_data(uid)
     if not user or bet_amount<=0 or user.get('balance',0) < bet_amount:
-        await interaction.followup.send("Không đủ token hoặc tham số sai.", ephemeral=True); return
+        await interaction.followup.send("Không đủ tiền hoặc tham số sai.", ephemeral=True); return
     try:
         parsed = parse_roulette_bet(bet_type)
     except Exception as e:
@@ -792,5 +823,9 @@ async def roulette_cmd(interaction:discord.Interaction, bet_amount:int, bet_type
 # -----------------------
 # Run
 # -----------------------
-if __name__ == "__main__":
+def main():
+    keep_alive()
     bot.run(TOKEN)
+
+if __name__ == "__main__":
+    main()
