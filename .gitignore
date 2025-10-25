@@ -1,5 +1,5 @@
 # Ẩn tệp biến môi trường
-.env
+
 
 # Ẩn các thư mục cache của Python
 __pycache__/
