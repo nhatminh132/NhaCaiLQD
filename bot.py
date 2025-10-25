@@ -898,7 +898,8 @@ logger.info("PHẦN 2/4 (v7) hoàn tất — tiếp theo là PHẦN 3/4: toàn b
 
 # PHẦN 3/4 - NHÓM /game (Tài Xỉu + Baccarat + Blackjack + Roulette + Đua ngựa + Xúc xắc + Bầu Cua + Slots + Vé số cào/thuờng cơ bản)
 # -*- coding: utf-8 -*-
-
+game_group = app_commands.Group(name="game", description="Tất cả các trò chơi casino")
+bot.tree.add_command(game_group)
 import math
 from typing import Tuple
 
