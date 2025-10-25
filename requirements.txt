@@ -1,6 +1,19 @@
-discord.py
-flask
-supabase
-python-dotenv
-pytz
-aiofiles
+# Discord & web
+discord.py==2.4.0
+Flask==3.0.3
+
+# Supabase client
+supabase==2.4.0
+
+# Environment & timezone
+python-dotenv==1.0.1
+pytz==2024.1
+
+# Async file IO (backup JSON)
+aiofiles==23.2.1
+
+# HTTP requests (fallbacks / keep-alive ping)
+requests==2.31.0
+
+# Logging & utilities
+colorlog==6.8.2
