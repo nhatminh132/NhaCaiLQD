@@ -1,9 +1,8 @@
 import os
 import time
-from supabase import create_client, Client
+import requests
 import colorlog
 
-# Logger setup
 logger = colorlog.getLogger("SUPABASE")
 handler = colorlog.StreamHandler()
 formatter = colorlog.ColoredFormatter(
@@ -21,55 +20,84 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 logger.setLevel("INFO")
 
-_supabase: Client | None = None
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+_headers = None
+_initialized = False
 
 
 def init_supabase(retries: int = 3, delay: int = 2):
-    """
-    Khởi tạo kết nối Supabase (phiên bản supabase-py >= 2.0, không dùng proxy).
-    """
-    global _supabase
-    url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_KEY")
+    global _headers, _initialized
 
-    if not url or not key:
+    if not SUPABASE_URL or not SUPABASE_KEY:
         logger.error("❌ Thiếu SUPABASE_URL hoặc SUPABASE_KEY trong biến môi trường.")
-        raise ValueError("Thiếu SUPABASE_URL hoặc SUPABASE_KEY trong biến môi trường.")
+        raise ValueError("Thiếu SUPABASE_URL hoặc SUPABASE_KEY.")
+
+    base = f"{SUPABASE_URL}/rest/v1"
+    _headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json"
+    }
 
     for attempt in range(1, retries + 1):
         try:
-            logger.info(f"🔗 Đang kết nối Supabase (lần {attempt}/{retries}) ...")
-            _supabase = create_client(url, key)
-
-            # Test truy cập bảng (tùy chọn, để chắc chắn kết nối hoạt động)
-            _supabase.table("users").select("id").limit(1).execute()
-
-            logger.info("✅ Kết nối Supabase thành công.")
-            return
+            logger.info(f"🔗 Đang kiểm tra kết nối Supabase (lần {attempt}/{retries}) ...")
+            resp = requests.get(f"{base}/users?select=id&limit=1", headers=_headers, timeout=10)
+            if resp.status_code == 200:
+                logger.info("✅ Kết nối Supabase REST API thành công.")
+                _initialized = True
+                return
+            else:
+                logger.warning(f"⚠️ Lỗi HTTP {resp.status_code}: {resp.text}")
         except Exception as e:
             logger.warning(f"⚠️ Lần thử {attempt}/{retries} thất bại: {e}")
-            time.sleep(delay)
+        time.sleep(delay)
 
     logger.error("❌ Không thể kết nối Supabase sau nhiều lần thử.")
     raise RuntimeError("Supabase chưa được khởi tạo.")
 
 
-def get_supabase() -> Client:
-    """
-    Trả về đối tượng Supabase client đã khởi tạo.
-    """
-    if _supabase is None:
-        raise RuntimeError("Supabase chưa được khởi tạo. Hãy gọi init_supabase() trước.")
-    return _supabase
+def query(table: str, filters: str = "", limit: int = 100):
+    """Thực hiện GET query tới Supabase REST."""
+    if not _initialized:
+        raise RuntimeError("Supabase chưa được khởi tạo.")
+    url = f"{SUPABASE_URL}/rest/v1/{table}?select=*&limit={limit}{filters}"
+    r = requests.get(url, headers=_headers, timeout=15)
+    if r.status_code == 200:
+        return r.json()
+    raise RuntimeError(f"Lỗi Supabase query: {r.status_code} - {r.text}")
 
 
-def test_connection():
-    """
-    Hàm kiểm tra nhanh xem Supabase có hoạt động hay không.
-    """
-    sb = get_supabase()
-    try:
-        res = sb.table("users").select("email").limit(1).execute()
-        logger.info(f"✅ Kiểm tra Supabase thành công ({len(res.data)} bản ghi được trả về).")
-    except Exception as e:
-        logger.error(f"❌ Lỗi khi kiểm tra Supabase: {e}")
+def insert(table: str, data: dict):
+    """Thêm bản ghi mới."""
+    if not _initialized:
+        raise RuntimeError("Supabase chưa được khởi tạo.")
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    r = requests.post(url, headers=_headers, json=data, timeout=15)
+    if r.status_code in [200, 201]:
+        return r.json()
+    raise RuntimeError(f"Lỗi insert: {r.status_code} - {r.text}")
+
+
+def update(table: str, match: str, data: dict):
+    """Cập nhật bản ghi (match là filter, ví dụ: 'email=eq.user@example.com')."""
+    if not _initialized:
+        raise RuntimeError("Supabase chưa được khởi tạo.")
+    url = f"{SUPABASE_URL}/rest/v1/{table}?{match}"
+    r = requests.patch(url, headers=_headers, json=data, timeout=15)
+    if r.status_code in [200, 204]:
+        return True
+    raise RuntimeError(f"Lỗi update: {r.status_code} - {r.text}")
+
+
+def delete(table: str, match: str):
+    """Xóa bản ghi."""
+    if not _initialized:
+        raise RuntimeError("Supabase chưa được khởi tạo.")
+    url = f"{SUPABASE_URL}/rest/v1/{table}?{match}"
+    r = requests.delete(url, headers=_headers, timeout=15)
+    if r.status_code in [200, 204]:
+        return True
+    raise RuntimeError(f"Lỗi delete: {r.status_code} - {r.text}")
