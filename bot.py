@@ -1,4 +1,3 @@
-#FIXED - CommandNotFound + Unknown Interaction errors resolved
 # PHẦN 1/4 - v7 Crown Update: CÀI ĐẶT NỀN TẢNG, SUPABASE RETRY, PROFILE/LEVEL, TRANSACTIONS, LOBBY
 # -*- coding: utf-8 -*-
 """
@@ -486,34 +485,6 @@ bot.admin_ids = {SUPER_ADMIN_ID}
 # cooldown mapping for /game commands (simple)
 _user_last_game_time: Dict[int, float] = {}
 
-# Global interaction timeout handler - FIXES Unknown Interaction errors
-@bot.tree.error
-async def on_app_command_error(interaction: Interaction, error: app_commands.AppCommandError):
-    """Handle application command errors gracefully"""
-    # Check if interaction is already responded to
-    if interaction.response.is_done():
-        return
-
-    # Handle NotFound errors (Unknown interaction)
-    if isinstance(error, app_commands.CommandInvokeError):
-        if "Unknown interaction" in str(error) or "10062" in str(error):
-            logger.warning(f"Unknown interaction error for user {interaction.user.id} - interaction timed out")
-            # Can't respond anymore, just log it
-            return
-
-    # For other errors, try to respond
-    try:
-        error_msg = "❌ Đã xảy ra lỗi khi xử lý lệnh."
-        if not interaction.response.is_done():
-            await interaction.response.send_message(error_msg, ephemeral=True)
-        else:
-            await interaction.followup.send(error_msg, ephemeral=True)
-    except Exception:
-        logger.exception("Could not send error message to user")
-
-    # Log the full error
-    logger.exception(f"Command error: {error}")
-
 # -----------------------
 # /profile command (embed detailed)
 # -----------------------
@@ -662,14 +633,7 @@ class CasinoLobbyView(ui.View):
 
 @bot.tree.command(name="casino", description="Mở lobby Casino — chọn game bằng nút")
 async def casino_cmd(interaction: Interaction):
-    # Defer IMMEDIATELY to prevent timeout
-    try:
-        await interaction.response.defer()
-    except discord.errors.NotFound:
-        # Interaction already expired (took >3s to reach this line)
-        logger.warning(f"Casino command timed out for user {interaction.user.id}")
-        return
-
+    await interaction.response.defer()
     view = CasinoLobbyView()
     embed = Embed(title="🎰 Casino Lobby", description="Chọn game bằng nút bên dưới.", color=discord.Color.blurple())
     await interaction.followup.send(embed=embed, view=view, ephemeral=False)
@@ -2021,14 +1985,7 @@ async def loan_reminder_task():
 # start background tasks on ready
 @bot.event
 async def on_ready():
-    # Sync commands with Discord - FIXES CommandNotFound
-    try:
-        synced = await bot.tree.sync()
-        logger.info(f"✅ Synced {len(synced)} commands to Discord")
-    except Exception as e:
-        logger.exception(f"❌ Command sync failed: {e}")
-
-    # Start background tasks
+    # ensure we don't start duplicates
     try:
         if not daily_backup_task.is_running():
             daily_backup_task.start()
@@ -2036,22 +1993,23 @@ async def on_ready():
             loan_reminder_task.start()
     except Exception:
         logger.exception("Không thể khởi background tasks.")
-
-    # Reload admin list
+    # reload admin list (in case)
     bot.admin_ids = load_admins_from_db()
-    logger.info(f"🎰 Casino Bot ready — User: {bot.user} | Admins: {bot.admin_ids}")
+    logger.info("Bot sẵn sàng — Admins: %s", bot.admin_ids)
 
 # -----------------------
 # Final run wrapper
 # -----------------------
 def finalize_and_run():
-    # Ensure Flask keep-alive is running
+    # ensure Flask keep-alive is running
     try:
         keep_alive()
     except Exception:
         logger.exception("Không thể khởi Flask keep-alive.")
-
-    # Run bot (tree sync happens in on_ready)
+    # sync tree
+    async def _sync_and_start():
+        await bot.wait_until_ready()
+    # run bot
     bot.run(DISCORD_TOKEN)
 
 # if run as script, start
