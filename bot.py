@@ -6,7 +6,8 @@ from dotenv import load_dotenv
 from core.supabase_client import supabase_init
 from core.utils import log_info, log_warn
 from web.server import keep_alive
-
+init_supabase()
+keep_alive()
 # ==============================
 # Khởi tạo môi trường
 # ==============================
