@@ -5,3 +5,4 @@ aiofiles==24.1.0
 requests
 asyncio
 python-dotenv==1.0.1
+pytz==2024.1
