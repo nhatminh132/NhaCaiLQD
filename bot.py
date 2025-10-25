@@ -71,3 +71,9 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         log_warn("Bot đã dừng thủ công.")
+
+# Giữ bot sống
+keep_alive()
+
+# Chạy bot
+bot.run(DISCORD_TOKEN)
