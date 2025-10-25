@@ -1,3 +1,5 @@
+
+#FIXED - CommandNotFound error resolved with bot.tree.sync()
 # PHẦN 1/4 - v7 Crown Update: CÀI ĐẶT NỀN TẢNG, SUPABASE RETRY, PROFILE/LEVEL, TRANSACTIONS, LOBBY
 # -*- coding: utf-8 -*-
 """
@@ -1985,7 +1987,14 @@ async def loan_reminder_task():
 # start background tasks on ready
 @bot.event
 async def on_ready():
-    # ensure we don't start duplicates
+    # Sync commands with Discord - THIS FIXES THE CommandNotFound ERROR
+    try:
+        synced = await bot.tree.sync()
+        logger.info(f"✅ Synced {len(synced)} commands to Discord")
+    except Exception as e:
+        logger.exception(f"❌ Command sync failed: {e}")
+
+    # Start background tasks
     try:
         if not daily_backup_task.is_running():
             daily_backup_task.start()
@@ -1993,23 +2002,22 @@ async def on_ready():
             loan_reminder_task.start()
     except Exception:
         logger.exception("Không thể khởi background tasks.")
-    # reload admin list (in case)
+
+    # Reload admin list
     bot.admin_ids = load_admins_from_db()
-    logger.info("Bot sẵn sàng — Admins: %s", bot.admin_ids)
+    logger.info(f"🎰 Casino Bot ready — User: {bot.user} | Admins: {bot.admin_ids}")
 
 # -----------------------
 # Final run wrapper
 # -----------------------
 def finalize_and_run():
-    # ensure Flask keep-alive is running
+    # Ensure Flask keep-alive is running
     try:
         keep_alive()
     except Exception:
         logger.exception("Không thể khởi Flask keep-alive.")
-    # sync tree
-    async def _sync_and_start():
-        await bot.wait_until_ready()
-    # run bot
+
+    # Run bot (tree sync happens in on_ready)
     bot.run(DISCORD_TOKEN)
 
 # if run as script, start
