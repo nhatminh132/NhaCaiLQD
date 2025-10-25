@@ -3,7 +3,7 @@ import asyncio
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
-from core.supabase_client import supabase_init
+from core.supabase_client import init_supabase
 from core.utils import log_info, log_warn
 from web.server import keep_alive
 init_supabase()
@@ -18,10 +18,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", 1121380060897742850))
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="/", intents=intents)
 
-# ==============================
-# Khởi tạo Supabase
-# ==============================
-supabase = supabase_init()
+
 
 # ==============================
 # Sự kiện khi bot khởi động
