@@ -54,6 +54,7 @@ except Exception as e:
 async def on_ready():
     log_info(f"Bot đã đăng nhập thành công dưới tên: {bot.user}")
     try:
+        tree.clear_commands(guild=discord.Object(id=GUILD_ID))
         synced = await tree.sync(guild=discord.Object(id=GUILD_ID))
         log_info(f"Đã đồng bộ {len(synced)} lệnh slash cho server ID {GUILD_ID}")
     except Exception as e:
