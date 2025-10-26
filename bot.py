@@ -10,102 +10,84 @@ from flask import Flask
 import threading
 
 # ==========================================================
-# 🔧 Nạp biến môi trường
+# 🔧 Tải biến môi trường
 # ==========================================================
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID = os.getenv("GUILD_ID")  # Có thể để trống nếu muốn sync toàn cầu
+GUILD_ID = os.getenv("GUILD_ID")
 
 intents = discord.Intents.default()
-intents.guilds = True
 intents.messages = True
+intents.guilds = True
 
 bot = commands.Bot(command_prefix="/", intents=intents)
 tree = bot.tree
 
 # ==========================================================
-# 🔌 Khởi tạo Supabase
+# 🧠 Hàm tự động khởi tạo người chơi nếu chưa có
+# ==========================================================
+async def ensure_user_exists(user_id: int):
+    try:
+        rows = query("users", filters=f"&email=eq.{user_id}", limit=1)
+        if not rows:
+            insert("users", {"email": str(user_id), "balance": 100000})
+            log_info(f"✅ Đã tạo tài khoản mới cho user {user_id}")
+        return True
+    except Exception as e:
+        log_warn(f"Lỗi khi kiểm tra/tạo tài khoản: {e}")
+        return False
+
+# ==========================================================
+# 🚀 Khởi tạo Supabase
 # ==========================================================
 try:
     init_supabase()
-    log_info("✅ Supabase đã sẵn sàng.")
+    log_info("Supabase đã sẵn sàng ✅")
 except Exception as e:
     log_error(f"Lỗi khi khởi tạo Supabase: {e}")
     raise
 
 # ==========================================================
-# ⚙️ Khi bot sẵn sàng
+# ⚙️ Sự kiện on_ready
 # ==========================================================
 @bot.event
 async def on_ready():
-    log_info(f"🤖 Bot đã đăng nhập: {bot.user}")
-
+    log_info(f"Bot đã đăng nhập thành công dưới tên: {bot.user}")
     try:
-        if GUILD_ID:
-            guild = discord.Object(id=int(GUILD_ID))
-            synced = await tree.sync(guild=guild)
-            log_info(f"Đã đồng bộ {len(synced)} lệnh cho server ID {GUILD_ID}")
-        else:
-            synced = await tree.sync()
-            log_info(f"Đã đồng bộ {len(synced)} lệnh toàn cầu.")
-
-        for cmd in synced:
-            log_info(f"📘 Slash command đã đăng ký: /{cmd.name}")
-
+        synced = await tree.sync(guild=discord.Object(id=GUILD_ID))
+        log_info(f"Đã đồng bộ {len(synced)} lệnh slash cho server ID {GUILD_ID}")
     except Exception as e:
-        log_error(f"❌ Lỗi khi sync lệnh: {e}")
+        log_error(f"Lỗi khi sync lệnh: {e}")
 
 # ==========================================================
-# 👤 /register — Đăng ký tài khoản
+# 👤 /profile — xem thông tin người chơi
 # ==========================================================
-@tree.command(name="register", description="Đăng ký tài khoản mới trong casino 🎉")
-async def register(interaction: discord.Interaction):
-    user = interaction.user
-    await interaction.response.defer(thinking=True)
-
-    try:
-        exists = query("users", filters=f"&email=eq.{user.id}", limit=1)
-        if exists:
-            await interaction.followup.send("⚠️ Bạn đã có tài khoản rồi.")
-            return
-
-        insert("users", {"email": str(user.id), "balance": 100000})
-        await interaction.followup.send(f"🎉 Đăng ký thành công! Bạn nhận được **100.000 Mcoin** miễn phí.")
-
-    except Exception as e:
-        await interaction.followup.send(f"⚠️ Lỗi khi đăng ký: `{e}`")
-
-# ==========================================================
-# 👁️ /profile — Xem hồ sơ người chơi
-# ==========================================================
-@tree.command(name="profile", description="Xem hồ sơ người chơi 👤")
+@tree.command(name="profile", description="Xem hồ sơ người chơi", guild=discord.Object(id=GUILD_ID))
 async def profile(interaction: discord.Interaction, user: discord.User = None):
     user = user or interaction.user
     await interaction.response.defer(thinking=True)
 
+    await ensure_user_exists(user.id)
     try:
         rows = query("users", filters=f"&email=eq.{user.id}", limit=1)
-        if not rows:
-            await interaction.followup.send(f"❌ Người chơi **{user.display_name}** chưa có trong hệ thống.")
-            return
+        u = rows[0]
 
-        data = rows[0]
         embed = discord.Embed(
             title=f"Hồ sơ của {user.display_name}",
             color=discord.Color.gold(),
-            description=f"💰 Số dư: **{data.get('balance', 0):,} Mcoin**"
+            description=f"💰 Số dư: **{u.get('balance', 0):,} Mcoin**"
         )
         embed.set_thumbnail(url=user.display_avatar.url)
         await interaction.followup.send(embed=embed)
 
     except Exception as e:
-        await interaction.followup.send(f"⚠️ Lỗi khi tải hồ sơ: `{e}`")
+        await interaction.followup.send(f"⚠️ Lỗi khi tải dữ liệu: `{e}`")
 
 # ==========================================================
-# 💸 /chuyentien — Chuyển tiền
+# 💸 /chuyentien — chuyển tiền giữa người chơi
 # ==========================================================
-@tree.command(name="chuyentien", description="Chuyển Mcoin cho người chơi khác 💸")
-@app_commands.describe(nguoi_nhan="Người nhận", so_tien="Số Mcoin cần chuyển")
+@tree.command(name="chuyentien", description="Chuyển Mcoin cho người chơi khác", guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(nguoi_nhan="Người nhận tiền", so_tien="Số Mcoin cần chuyển")
 async def chuyentien(interaction: discord.Interaction, nguoi_nhan: discord.User, so_tien: int):
     nguoi_gui = interaction.user
     await interaction.response.defer(thinking=True)
@@ -114,48 +96,45 @@ async def chuyentien(interaction: discord.Interaction, nguoi_nhan: discord.User,
         await interaction.followup.send("❌ Số tiền phải lớn hơn 0.")
         return
 
+    await ensure_user_exists(nguoi_gui.id)
+    await ensure_user_exists(nguoi_nhan.id)
+
     try:
-        gui = query("users", filters=f"&email=eq.{nguoi_gui.id}", limit=1)
-        nhan = query("users", filters=f"&email=eq.{nguoi_nhan.id}", limit=1)
+        gui = query("users", filters=f"&email=eq.{nguoi_gui.id}", limit=1)[0]
+        nhan = query("users", filters=f"&email=eq.{nguoi_nhan.id}", limit=1)[0]
 
-        if not gui:
-            await interaction.followup.send("⚠️ Bạn chưa có tài khoản. Hãy dùng `/register`.")
-            return
-        if not nhan:
-            await interaction.followup.send("⚠️ Người nhận chưa có tài khoản.")
-            return
-
-        balance_gui = gui[0].get("balance", 0)
-        if balance_gui < so_tien:
+        if gui["balance"] < so_tien:
             await interaction.followup.send("❌ Bạn không đủ Mcoin để chuyển.")
             return
 
-        update("users", f"email=eq.{nguoi_gui.id}", {"balance": balance_gui - so_tien})
-        update("users", f"email=eq.{nguoi_nhan.id}", {"balance": nhan[0].get("balance", 0) + so_tien})
+        update("users", f"email=eq.{nguoi_gui.id}", {"balance": gui["balance"] - so_tien})
+        update("users", f"email=eq.{nguoi_nhan.id}", {"balance": nhan["balance"] + so_tien})
 
         await interaction.followup.send(
             f"✅ **{nguoi_gui.display_name}** đã chuyển **{so_tien:,} Mcoin** cho **{nguoi_nhan.display_name}**!"
         )
 
     except Exception as e:
-        await interaction.followup.send(f"⚠️ Lỗi khi chuyển tiền: `{e}`")
+        await interaction.followup.send(f"⚠️ Lỗi khi thực hiện chuyển tiền: `{e}`")
 
 # ==========================================================
-# 🎮 /game — Gọi các module game riêng
+# 🎮 /game — gọi module game động
 # ==========================================================
-@tree.command(name="game", description="Chơi game tại casino 🎲")
-@app_commands.describe(tro_choi="Tên game: taixiu, bau_cua, slots, horse_race, ...")
+@tree.command(name="game", description="Chơi game tại casino 🎲", guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(tro_choi="Tên game (vd: taixiu, bau_cua, slots, horse_race)")
 async def game(interaction: discord.Interaction, tro_choi: str):
     await interaction.response.defer(thinking=True)
+
+    await ensure_user_exists(interaction.user.id)
     try:
-        module_path = f"games.{tro_choi}"
-        if not os.path.exists(f"./games/{tro_choi}.py"):
-            await interaction.followup.send(f"❌ Game `{tro_choi}` chưa có.")
+        module_name = f"games.{tro_choi}"
+        file_path = f"./games/{tro_choi}.py"
+        if not os.path.exists(file_path):
+            await interaction.followup.send(f"❌ Game `{tro_choi}` không tồn tại.")
             return
 
         import importlib
-        game_module = importlib.import_module(module_path)
-
+        game_module = importlib.import_module(module_name)
         if hasattr(game_module, "start_game"):
             await game_module.start_game(interaction)
         else:
@@ -164,22 +143,21 @@ async def game(interaction: discord.Interaction, tro_choi: str):
         await interaction.followup.send(f"⚠️ Lỗi khi tải game: `{e}`")
 
 # ==========================================================
-# 🌐 Flask Keep-alive
+# 🌐 Flask keep-alive server (Render Free)
 # ==========================================================
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "✅ Bot is alive and running!"
+    return "Bot is alive and running!"
 
 def run_flask():
     app.run(host="0.0.0.0", port=8080)
 
-threading.Thread(target=run_flask, daemon=True).start()
-
 # ==========================================================
-# 🚀 Chạy bot
+# 🚀 Chạy bot Discord song song với Flask
 # ==========================================================
 if __name__ == "__main__":
-    log_info("🚀 Đang khởi chạy bot Discord...")
+    log_info("Đang khởi chạy bot Discord...")
+    threading.Thread(target=run_flask, daemon=True).start()
     bot.run(TOKEN)
