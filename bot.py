@@ -6,6 +6,8 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from core.supabase_client import init_supabase, query, insert, update, delete
 from core.utils import log_info, log_warn, log_error
+from flask import Flask
+import threading
 
 # Tải biến môi trường từ .env
 load_dotenv()
@@ -157,3 +159,14 @@ async def register(interaction: discord.Interaction):
 if __name__ == "__main__":
     log_info("Đang khởi chạy bot Discord...")
     bot.run(TOKEN)
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is alive and running!"
+
+def run_flask():
+    app.run(host="0.0.0.0", port=8080)
+
+threading.Thread(target=run_flask).start()
